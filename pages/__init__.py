@@ -843,7 +843,7 @@ def page_invoices(ctx):
     # TAB 2: Régénérer certaines factures
     # ===========================
     with tab2:
-       st.markdown("### 🔄 Remplacer factures pour certaines familles")
+        st.markdown("### 🔄 Remplacer factures pour certaines familles")
         
         if not latest:
             st.error("❌ Aucun dossier de factures existant. Générez d'abord toutes les factures.")
