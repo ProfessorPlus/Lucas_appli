@@ -10,8 +10,6 @@ from datetime import datetime, time
 import calendar
 
 # Import des scripts
-from scripts.recap_profs import compute_teacher_recap
-from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes
 from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
@@ -21,6 +19,9 @@ from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
+from scripts.recap_profs import compute_teacher_recap
+from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
+from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 
 
 def page_accueil(ctx):
@@ -560,10 +561,10 @@ def page_payment(ctx):
             return
         
         # Options communes (On Behalf Of + Méthodes paiement)
-        use_on_behalf, selected_teachers, payment_method_types = _render_payment_options(ctx, secrets, "tab1")
+        use_on_behalf, selected_teachers, payment_method_types, no_split_mode, secrets_no_prof = _render_payment_options(ctx, secrets, "tab1")
         
-        # Bouton Relancer manquants (seulement si rapport affiché)
-        if st.session_state.get("show_payment_report") and os.path.exists(report_path):
+        # Bouton Relancer manquants (seulement si rapport affiché et mode normal)
+        if not no_split_mode and st.session_state.get("show_payment_report") and os.path.exists(report_path):
             with open(report_path, "r", encoding="utf-8") as f:
                 report = json.load(f)
             missing_families = report.get("missing_families", [])
@@ -612,11 +613,28 @@ def page_payment(ctx):
                 progress.progress(p)
                 status.info(m)
             
-            result = run_create_payment_links(
-                data, secrets, familles_euros, tarifs_speciaux,
-                use_on_behalf, selected_teachers, ctx["DATA_DIR"], callback,
-                payment_method_types=payment_method_types,
-            )
+            # Mode sans transfert
+            if no_split_mode:
+                if not secrets_no_prof:
+                    st.error("❌ secrets_no_prof.yaml manquant !")
+                else:
+                    result = run_create_payment_links_no_split(
+                        data, secrets_no_prof, familles_euros,
+                        ctx["DATA_DIR"], callback,
+                        payment_method_types=payment_method_types,
+                    )
+                    
+                    if result["success"]:
+                        st.success(f"✅ **{result['links_count']}** liens créés (mode sans transfert)")
+                    else:
+                        st.error(f"❌ Erreur : {result['error']}")
+            else:
+                # Mode normal avec split
+                result = run_create_payment_links(
+                    data, secrets, familles_euros, tarifs_speciaux,
+                    use_on_behalf, selected_teachers, ctx["DATA_DIR"], callback,
+                    payment_method_types=payment_method_types,
+                )
             
             if result["success"]:
                 st.session_state.show_payment_report = True  # Activer l'affichage du rapport
@@ -676,7 +694,7 @@ def page_payment(ctx):
             st.info(f"📊 **{len(selected_family_ids)}** famille(s) sélectionnée(s)")
             
             # Options
-            use_on_behalf_t2, selected_teachers_t2, payment_method_types_t2 = _render_payment_options(ctx, secrets, "tab2")
+            use_on_behalf_t2, selected_teachers_t2, payment_method_types_t2, no_split_t2, secrets_no_prof_t2 = _render_payment_options(ctx, secrets, "tab2")
             
             if st.button("🔄 Régénérer les liens sélectionnés", type="primary", width="stretch", key="regen_selected"):
                 familles_euros = ctx["load_familles_euros"]()
@@ -689,13 +707,25 @@ def page_payment(ctx):
                     progress.progress(p)
                     status.info(m)
                 
-                result = run_create_payment_links(
-                    data, secrets, familles_euros, tarifs_speciaux,
-                    use_on_behalf_t2, selected_teachers_t2, ctx["DATA_DIR"], callback,
-                    payment_method_types=payment_method_types_t2,
-                    target_family_ids=selected_family_ids,
-                    skip_if_exists=False,  # Forcer la régénération
-                )
+                if no_split_t2:
+                    if not secrets_no_prof_t2:
+                        st.error("❌ secrets_no_prof.yaml manquant !")
+                    else:
+                        result = run_create_payment_links_no_split(
+                            data, secrets_no_prof_t2, familles_euros,
+                            ctx["DATA_DIR"], callback,
+                            payment_method_types=payment_method_types_t2,
+                            target_family_ids=selected_family_ids,
+                            skip_if_exists=False,
+                        )
+                else:
+                    result = run_create_payment_links(
+                        data, secrets, familles_euros, tarifs_speciaux,
+                        use_on_behalf_t2, selected_teachers_t2, ctx["DATA_DIR"], callback,
+                        payment_method_types=payment_method_types_t2,
+                        target_family_ids=selected_family_ids,
+                        skip_if_exists=False,  # Forcer la régénération
+                    )
                 
                 if result["success"]:
                     st.session_state.regenerated_families = selected_family_ids
@@ -718,26 +748,25 @@ def page_payment(ctx):
             st.warning("⚠️ Sélectionnez au moins une famille.")
 
 def _render_payment_options(ctx, secrets, prefix):
-    """Rend les options de paiement (On Behalf Of + Méthodes) et retourne les valeurs."""
+    """Rend les options de paiement (On Behalf Of + Méthodes) et retourne les valeurs.
     
-    # Options On Behalf Of
-    st.markdown("### 👨‍🏫 On Behalf Of")
+    Returns:
+        tuple: (use_on_behalf, selected_teachers, payment_method_types, no_split_mode, secrets_no_prof)
+    """
     
-    use_on_behalf = st.checkbox("🔄 Activer On Behalf Of", value=True, key=f"use_on_behalf_{prefix}")
+    # ===========================
+    # MODE SANS TRANSFERT
+    # ===========================
+    st.markdown("### 💰 Mode de paiement")
     
-    selected_teachers = []
-    if use_on_behalf:
-        teachers = secrets.get("teachers", {})
-        teachers_with_connect = [n for n, i in teachers.items() if i.get("connect_account_id")]
-        
-        selected_teachers = st.multiselect(
-            "Professeurs pour On Behalf Of",
-            teachers_with_connect,
-            default=teachers_with_connect,
-            key=f"selected_teachers_{prefix}"
-        )
+    no_split_mode = st.toggle(
+        "🏦 Tout recevoir sur mon compte (sans transfert aux profs)",
+        value=False,
+        key=f"no_split_{prefix}",
+        help="Active le mode sans split : tous les paiements vont directement sur votre compte Stripe principal (utilise secrets_no_prof.yaml)"
+    )
     
-    # Méthodes de paiement avec tooltip pour Revolut
+    # Méthodes de paiement (communes aux deux modes)
     st.markdown("### 💳 Méthodes de paiement")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -751,7 +780,6 @@ def _render_payment_options(ctx, secrets, prefix):
         pm_google = st.checkbox("🤖 Google Pay", value=True, key=f"pm_google_{prefix}")
 
     with col3:
-        # Revolut avec tooltip
         col_rev, col_help = st.columns([4, 1])
         with col_rev:
             pm_revolut = st.checkbox("🔄 Revolut Pay", value=True, key=f"pm_revolut_{prefix}")
@@ -780,7 +808,35 @@ def _render_payment_options(ctx, secrets, prefix):
     
     st.warning("⚠️ Vérifiez dans les paramètres Stripe que ces méthodes sont bien actives !")
     
-    return use_on_behalf, selected_teachers, payment_method_types
+    if no_split_mode:
+        st.warning("⚠️ **Mode sans transfert activé** — Aucun split ne sera créé. Tous les paiements iront sur le compte Stripe défini dans `secrets_no_prof.yaml`.")
+        
+        secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
+        if not secrets_no_prof:
+            st.error("❌ `secrets_no_prof.yaml` non trouvé dans config/ ou à la racine du projet.")
+            st.info("Créez ce fichier avec votre clé Stripe alternative (même structure que secrets.yaml mais sans teachers).")
+            return None, None, payment_method_types, True, None
+        
+        return None, None, payment_method_types, True, secrets_no_prof
+    
+    # --- Mode normal avec split ---
+    st.markdown("### 👨‍🏫 On Behalf Of")
+    
+    use_on_behalf = st.checkbox("🔄 Activer On Behalf Of", value=True, key=f"use_on_behalf_{prefix}")
+    
+    selected_teachers = []
+    if use_on_behalf:
+        teachers = secrets.get("teachers", {})
+        teachers_with_connect = [n for n, i in teachers.items() if i.get("connect_account_id")]
+        
+        selected_teachers = st.multiselect(
+            "Professeurs pour On Behalf Of",
+            teachers_with_connect,
+            default=teachers_with_connect,
+            key=f"selected_teachers_{prefix}"
+        )
+    
+    return use_on_behalf, selected_teachers, payment_method_types, False, None
 
 
 def page_invoices(ctx):
@@ -2302,5 +2358,3 @@ def page_profs(ctx):
                 mime="application/pdf",
                 key="dl_pdf_final",
             )
-
-
