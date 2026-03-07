@@ -10,6 +10,8 @@ from datetime import datetime, time
 import calendar
 
 # Import des scripts
+from scripts.recap_profs import compute_teacher_recap
+from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes
 from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
@@ -2096,3 +2098,209 @@ def page_config(ctx):
             secrets["gmail"]["app_password"] = app_password
             ctx["save_secrets"](secrets)
             st.success("✅ Configuration email sauvegardée !")
+
+def page_profs(ctx):
+    import streamlit as st
+    import os
+    from datetime import datetime
+
+    st.markdown('<div class="section-title">👨‍🏫 Récapitulatif Professeurs</div>', unsafe_allow_html=True)
+
+    data = ctx["load_extracted_data"]()
+    secrets = ctx["load_secrets"]()
+
+    if not data:
+        st.warning("⚠️ Aucune donnée extraite. Lancez d'abord une extraction TutorBird.")
+        return
+
+    if not secrets:
+        st.error("❌ Fichier secrets.yaml non trouvé !")
+        return
+
+    familles_euros = ctx["load_familles_euros"]()
+    tarifs_speciaux = ctx["load_tarifs_speciaux"]()
+
+    # Import local
+    from scripts.recap_profs import compute_teacher_recap
+    from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
+
+    # Calculer le récap
+    recap = compute_teacher_recap(data, secrets, familles_euros, tarifs_speciaux)
+    teachers = recap["teachers"]
+    grand_total = recap["grand_total"]
+
+    # Déterminer le mois depuis les données
+    MONTHS_FR = ctx["MONTHS_FR"]
+    all_dates = []
+    for fam in data.values():
+        for l in fam.get("lessons", []):
+            d = l.get("date", "")
+            if d:
+                all_dates.append(d)
+
+    if all_dates:
+        try:
+            first_date = datetime.strptime(all_dates[0], "%d.%m.%Y")
+            mois_label = f"{MONTHS_FR[first_date.month - 1]} {first_date.year}"
+        except Exception:
+            mois_label = "Période en cours"
+    else:
+        mois_label = "Période en cours"
+
+    # ===========================
+    # HEADER
+    # ===========================
+    st.markdown(f"""
+    <div class="header-card">
+        <h1>💰 Paie des professeurs — {mois_label}</h1>
+        <p>Taux de conversion : 1 CHF = 1.0896 EUR  •  Total : {grand_total:.2f} €</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Stats globales
+    col1, col2, col3 = st.columns(3)
+    nb_profs = len([t for t in teachers.values() if t["nb_lessons"] > 0])
+
+    with col1:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-label">👨‍🏫 Professeurs actifs</div>
+            <div class="stat-value">{nb_profs}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-label">📚 Leçons payables</div>
+            <div class="stat-value">{recap['total_lessons']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-label">💰 Grand total</div>
+            <div class="stat-value">{grand_total:,.2f} €</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ===========================
+    # TABLEAU RÉCAP PAR PROF
+    # ===========================
+    st.markdown('<div class="section-title">📊 Détail par professeur</div>', unsafe_allow_html=True)
+
+    # Logo (cherché une seule fois)
+    candidates = [
+        os.path.join(ctx["BASE_DIR"], "Professor_logo_dernier.png"),
+        os.path.join(ctx["BASE_DIR"], "assets", "logo.png"),
+    ]
+    logo_path = next((p for p in candidates if os.path.exists(p)), None)
+
+    for tname in sorted(teachers.keys()):
+        tdata = teachers[tname]
+        if tdata["nb_lessons"] == 0:
+            continue
+
+        total = tdata["eur"] + tdata["chf_as_eur"]
+
+        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{total:.2f} €**", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Familles EUR", f"{tdata['eur']:.2f} €")
+            with c2:
+                st.metric("Familles CHF→EUR", f"{tdata['chf_as_eur']:.2f} €")
+            with c3:
+                st.metric("TOTAL", f"{total:.2f} €")
+
+            # Tableau des leçons
+            sorted_details = sorted(tdata["details"], key=lambda x: x["date"])
+            table_rows = []
+            for d in sorted_details:
+                table_rows.append({
+                    "Date": d["date"],
+                    "Élève": d["student"],
+                    "Durée": f"{d['duration_min']} min",
+                    "Taux": d["rate"],
+                    "Devise": d["currency"],
+                    "Montant €": f"{d['amount_eur']:.2f}",
+                })
+
+            st.dataframe(table_rows, hide_index=True, use_container_width=True)
+
+            # Bouton téléchargement individuel
+            safe_name = tname.replace(" ", "_")
+            filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
+
+            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path)
+            st.download_button(
+                label=f"📥 Télécharger le PDF de {tname}",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                key=f"dl_pdf_{safe_name}",
+            )
+
+    # ===========================
+    # TÉLÉCHARGEMENTS GLOBAUX
+    # ===========================
+    st.markdown("---")
+    st.markdown('<div class="section-title">📥 Télécharger toutes les fiches</div>', unsafe_allow_html=True)
+
+    col_zip, col_combined = st.columns(2)
+
+    with col_zip:
+        if st.button("📦 Générer le ZIP (1 PDF par prof)", type="primary", width="stretch", key="gen_zip"):
+            with st.spinner("Génération du ZIP..."):
+                zip_bytes = generate_all_pdfs_as_zip(
+                    teachers, mois_label,
+                    logo_path=logo_path,
+                    exclude_owner="Parisi Lucas",
+                )
+                if zip_bytes:
+                    st.session_state.prof_zip_bytes = zip_bytes
+                    st.session_state.prof_zip_filename = f"Paie_Profs_{mois_label.replace(' ', '_')}.zip"
+                    st.success("✅ ZIP généré !")
+                    st.rerun()
+
+    with col_combined:
+        if st.button("📄 Générer le PDF combiné (tout en un)", width="stretch", key="gen_combined"):
+            with st.spinner("Génération du PDF..."):
+                pdf_bytes = generate_all_pdfs_to_bytes(
+                    teachers, mois_label,
+                    logo_path=logo_path,
+                    exclude_owner="Parisi Lucas",
+                )
+                if pdf_bytes:
+                    st.session_state.prof_pdf_bytes = pdf_bytes
+                    st.session_state.prof_pdf_filename = f"Paie_Profs_{mois_label.replace(' ', '_')}.pdf"
+                    st.success("✅ PDF généré !")
+                    st.rerun()
+
+    # Boutons de téléchargement
+    dl1, dl2 = st.columns(2)
+
+    with dl1:
+        if st.session_state.get("prof_zip_bytes"):
+            st.download_button(
+                label="📥 Télécharger le ZIP",
+                data=st.session_state.prof_zip_bytes,
+                file_name=st.session_state.get("prof_zip_filename", "paie_profs.zip"),
+                mime="application/zip",
+                type="primary",
+                key="dl_zip_final",
+            )
+
+    with dl2:
+        if st.session_state.get("prof_pdf_bytes"):
+            st.download_button(
+                label="📥 Télécharger le PDF combiné",
+                data=st.session_state.prof_pdf_bytes,
+                file_name=st.session_state.get("prof_pdf_filename", "paie_profs.pdf"),
+                mime="application/pdf",
+                key="dl_pdf_final",
+            )
+
+

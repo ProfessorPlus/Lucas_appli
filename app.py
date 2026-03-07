@@ -1,7 +1,7 @@
 """
 🎓 Professor+ Admin
 Interface Streamlit - Gestion de l'activité de soutien scolaire
-VERSION 2.0 - Restructurée
+VERSION 2.1 - Avec page Professeurs + mode sans transfert
 """
 
 import streamlit as st
@@ -180,6 +180,18 @@ def save_tarifs_speciaux(tarifs):
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump({"tarifs_speciaux": tarifs}, f, allow_unicode=True)
 
+def load_secrets_no_prof():
+    """Charge secrets_no_prof.yaml (paiements sans split)."""
+    paths = [
+        os.path.join(CONFIG_DIR, "secrets_no_prof.yaml"),
+        os.path.join(BASE_DIR, "secrets_no_prof.yaml"),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+    return None
+
 def load_extracted_data():
     path = os.path.join(DATA_DIR, "full_output_tb_SIMPLE.json")
     if os.path.exists(path):
@@ -261,6 +273,10 @@ with st.sidebar:
         st.session_state.current_page = "accueil"
         st.rerun()
     
+    if st.button("👨‍🏫 Professeurs", key="nav_profs", width="stretch"):
+        st.session_state.current_page = "profs"
+        st.rerun()
+    
     st.markdown('<p class="section-label">📥 EXTRACTION</p>', unsafe_allow_html=True)
     
     if st.button("🗓️ Extraire les leçons", key="nav_extract", width="stretch"):
@@ -325,7 +341,7 @@ with st.sidebar:
 from pages import (
     page_accueil, page_extract, page_twint, page_cleanup,
     page_payment, page_invoices, page_send, page_reminders,
-    page_sync, page_update, page_config
+    page_sync, page_update, page_config, page_profs
 )
 
 # ===========================
@@ -341,6 +357,7 @@ ctx = {
     "save_familles_euros": save_familles_euros,
     "load_tarifs_speciaux": load_tarifs_speciaux,
     "save_tarifs_speciaux": save_tarifs_speciaux,
+    "load_secrets_no_prof": load_secrets_no_prof,
     "load_extracted_data": load_extracted_data,
     "get_latest_invoice_folder": get_latest_invoice_folder,
     "get_month_year_from_folder": get_month_year_from_folder,
@@ -372,5 +389,7 @@ elif page == "update":
     page_update(ctx)
 elif page == "config":
     page_config(ctx)
+elif page == "profs":
+    page_profs(ctx)
 else:
     page_accueil(ctx)
