@@ -8,7 +8,7 @@ import streamlit as st
 import os
 import json
 import yaml
-from scripts.config_loader import load_secrets
+from scripts.config_loader import load_secrets, load_secrets_no_prof
 from datetime import datetime, time, timedelta
 import calendar
 
@@ -179,18 +179,6 @@ def save_tarifs_speciaux(tarifs):
     path = os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump({"tarifs_speciaux": tarifs}, f, allow_unicode=True)
-
-def load_secrets_no_prof():
-    """Charge secrets_no_prof.yaml (paiements sans split)."""
-    paths = [
-        os.path.join(CONFIG_DIR, "secrets_no_prof.yaml"),
-        os.path.join(BASE_DIR, "secrets_no_prof.yaml"),
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f)
-    return None
 
 def load_extracted_data():
     path = os.path.join(DATA_DIR, "full_output_tb_SIMPLE.json")
