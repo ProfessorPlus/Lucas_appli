@@ -16,8 +16,79 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
+# --- FX (CHF -> EUR) via ECB SDMX API ---
+# Series: EXR.M.CHF.EUR.SP00.E (monthly end-of-period)
+# Business rule: factor = 2 - value
+# No hardcoded fallback: if the API fails or returns no value, we raise.
 
-CHF_TO_EUR = 1.0896
+import requests
+from functools import lru_cache
+from datetime import date as _date, datetime as _datetime
+
+ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
+
+
+def _to_date(d):
+    """Accepts date/datetime or ISO string (YYYY-MM or YYYY-MM-DD) and returns a date."""
+    if d is None:
+        return None
+    if isinstance(d, _date) and not isinstance(d, _datetime):
+        return d
+    if isinstance(d, _datetime):
+        return d.date()
+    if isinstance(d, str):
+        s = d.strip()
+        if len(s) == 7:
+            s = s + "-01"
+        return _datetime.strptime(s, "%Y-%m-%d").date()
+    raise TypeError(f"Unsupported date type: {type(d)}")
+
+
+def _month_start_end(y: int, m: int) -> tuple[str, str]:
+    return f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-31"
+
+
+@lru_cache(maxsize=36)
+def fetch_chf_eur_monthly_value(y: int, m: int) -> float:
+    start, end = _month_start_end(y, m)
+    headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
+
+    r = requests.get(
+        ECB_SDMX_URL,
+        params={"startPeriod": start, "endPeriod": end},
+        headers=headers,
+        timeout=20,
+    )
+    r.raise_for_status()
+    data = r.json()
+
+    series = data["dataSets"][0]["series"]
+    first_key = next(iter(series.keys()))
+    obs = series[first_key].get("observations", {})
+    if not obs:
+        raise RuntimeError(f"Aucune observation FX trouvée pour {y:04d}-{m:02d} (EXR.M.CHF.EUR.SP00.E).")
+
+    last_idx = max(int(k) for k in obs.keys())
+    value = obs[str(last_idx)][0]
+    return float(value)
+
+
+def require_chf_to_eur_factor(extraction_end_date):
+    """
+    Returns (factor, month_label, raw_value) using month of extraction_end_date.
+    Raises RuntimeError if date missing or API returns no value.
+    """
+    d = _to_date(extraction_end_date)
+    if d is None:
+        raise RuntimeError(
+            "Aucune valeur API trouvée de conversion : extraction_end_date manquante. "
+            "Impossible de calculer le taux CHF→EUR."
+        )
+    raw = fetch_chf_eur_monthly_value(d.year, d.month)
+    factor = round(2.0 - raw, 6)
+    month_label = f"{d.year:04d}-{d.month:02d}"
+    return factor, month_label, raw
+
 
 HEADER_BG = colors.HexColor("#1F3A67")
 ROW_ALT = colors.HexColor("#f5f5f5")
@@ -75,7 +146,7 @@ def _build_styles():
     }
 
 
-def _build_teacher_story(teacher_name, data, mois_label, logo_path, styles):
+def _build_teacher_story(teacher_name, data, mois_label, logo_path, styles, chf_to_eur_factor, fx_month_label, fx_raw_value):
     """Builds the reportlab story (list of flowables) for one teacher."""
     story = []
 
@@ -184,7 +255,7 @@ def _build_teacher_story(teacher_name, data, mois_label, logo_path, styles):
     # Footer
     story.append(Spacer(1, 10*mm))
     story.append(Paragraph(
-        f"Taux de conversion : 1 CHF = {CHF_TO_EUR} EUR  |  ★ = tarif spécial",
+        f"Taux de conversion (mois {fx_month_label}) : 1 CHF = {chf_to_eur_factor} EUR  (règle: 2 - {fx_raw_value})  |  ★ = tarif spécial",
         styles["footer"]
     ))
     story.append(Paragraph("Généré automatiquement — Professor+", styles["footer"]))
@@ -192,7 +263,7 @@ def _build_teacher_story(teacher_name, data, mois_label, logo_path, styles):
     return story
 
 
-def generate_single_pdf(teacher_name, data, mois_label, output_path, logo_path=None):
+def generate_single_pdf(teacher_name, data, mois_label, output_path, logo_path=None, extraction_end_date=None):
     """Génère un PDF pour un seul prof."""
     styles = _build_styles()
     
@@ -202,12 +273,13 @@ def generate_single_pdf(teacher_name, data, mois_label, output_path, logo_path=N
         topMargin=20*mm, bottomMargin=20*mm,
     )
     
-    story = _build_teacher_story(teacher_name, data, mois_label, logo_path, styles)
+    chf_to_eur_factor, fx_month_label, fx_raw_value = require_chf_to_eur_factor(extraction_end_date)
+    story = _build_teacher_story(teacher_name, data, mois_label, logo_path, styles, chf_to_eur_factor, fx_month_label, fx_raw_value)
     doc.build(story)
     return output_path
 
 
-def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None):
+def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None, extraction_end_date=None):
     """Génère un PDF pour un seul prof, retourne les bytes."""
     styles = _build_styles()
     
@@ -218,13 +290,14 @@ def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None)
         topMargin=20*mm, bottomMargin=20*mm,
     )
     
-    story = _build_teacher_story(teacher_name, data, mois_label, logo_path, styles)
+    chf_to_eur_factor, fx_month_label, fx_raw_value = require_chf_to_eur_factor(extraction_end_date)
+    story = _build_teacher_story(teacher_name, data, mois_label, logo_path, styles, chf_to_eur_factor, fx_month_label, fx_raw_value)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
 
-def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas"):
+def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None):
     """
     Génère un ZIP contenant un PDF distinct par prof.
     
@@ -243,7 +316,7 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
             if data["nb_lessons"] == 0:
                 continue
             
-            pdf_bytes = generate_single_pdf_to_bytes(tname, data, mois_label, logo_path)
+            pdf_bytes = generate_single_pdf_to_bytes(tname, data, mois_label, logo_path, extraction_end_date=extraction_end_date)
             safe_name = tname.replace(" ", "_")
             filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
             zf.writestr(filename, pdf_bytes)
@@ -252,7 +325,7 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
     return zip_buffer.getvalue()
 
 
-def generate_combined_pdf(teacher_recaps, mois_label, output_path, logo_path=None, exclude_owner="Parisi Lucas"):
+def generate_combined_pdf(teacher_recaps, mois_label, output_path, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None):
     """
     Génère un PDF combiné avec tous les profs (un prof par page).
     
@@ -274,6 +347,8 @@ def generate_combined_pdf(teacher_recaps, mois_label, output_path, logo_path=Non
         topMargin=20*mm, bottomMargin=20*mm,
     )
     
+    chf_to_eur_factor, fx_month_label, fx_raw_value = require_chf_to_eur_factor(extraction_end_date)
+
     combined_story = []
     first = True
     
@@ -289,7 +364,7 @@ def generate_combined_pdf(teacher_recaps, mois_label, output_path, logo_path=Non
         first = False
         
         combined_story.extend(
-            _build_teacher_story(tname, data, mois_label, logo_path, styles)
+            _build_teacher_story(tname, data, mois_label, logo_path, styles, chf_to_eur_factor, fx_month_label, fx_raw_value)
         )
     
     if combined_story:
@@ -298,7 +373,7 @@ def generate_combined_pdf(teacher_recaps, mois_label, output_path, logo_path=Non
     return None
 
 
-def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas"):
+def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None):
     """
     Génère un PDF combiné en mémoire (bytes) pour téléchargement Streamlit.
     
@@ -315,6 +390,8 @@ def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclu
         topMargin=20*mm, bottomMargin=20*mm,
     )
     
+    chf_to_eur_factor, fx_month_label, fx_raw_value = require_chf_to_eur_factor(extraction_end_date)
+
     combined_story = []
     first = True
     
@@ -330,7 +407,7 @@ def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclu
         first = False
         
         combined_story.extend(
-            _build_teacher_story(tname, data, mois_label, logo_path, styles)
+            _build_teacher_story(tname, data, mois_label, logo_path, styles, chf_to_eur_factor, fx_month_label, fx_raw_value)
         )
     
     if combined_story:

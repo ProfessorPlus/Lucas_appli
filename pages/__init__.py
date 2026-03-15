@@ -2242,7 +2242,19 @@ def page_profs(ctx):
     from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 
     # Calculer le récap
-    recap = compute_teacher_recap(data, secrets, familles_euros, tarifs_speciaux)
+        # Calculer le récap (FX automatique basé sur le mois de la date de fin d'extraction)
+    extraction_end = None
+    try:
+        extraction_end = st.session_state.get('extract_dates', {}).get('end')
+    except Exception:
+        extraction_end = None
+
+    try:
+        recap = compute_teacher_recap(data, secrets, familles_euros, tarifs_speciaux, extraction_end_date=extraction_end)
+    except RuntimeError as e:
+        st.error(str(e))
+        return
+
     teachers = recap["teachers"]
     grand_total = recap["grand_total"]
 

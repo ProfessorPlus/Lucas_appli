@@ -52,3 +52,4 @@ Thumbs.db
 # 📜 LOGS
 # =========================
 *.log
+config/secrets_no_prof.yaml
