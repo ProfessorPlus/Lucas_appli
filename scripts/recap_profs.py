@@ -23,8 +23,74 @@ import requests
 
 PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}
 
-# ECB SDMX endpoint for: EXR.M.CHF.EUR.SP00.E
+# ===========================
+# FX CHF → EUR
+# ===========================
+# Priority: Frankfurter API → ECB SDMX → hardcoded fallback
+
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
 ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
+
+# Hardcoded fallback (updated manually when needed)
+FALLBACK_CHF_EUR = 0.94  # ~approximate 2026 rate
+
+
+@lru_cache(maxsize=36)
+def fetch_chf_eur_rate() -> tuple[float, str]:
+    """
+    Fetches the CHF→EUR rate. Returns (rate, source_label).
+    
+    Chain: Frankfurter → ECB → hardcoded fallback.
+    Frankfurter returns the rate directly (1 CHF = X EUR).
+    """
+    
+    # 1. Frankfurter API (gratuit, sans clé, données ECB)
+    try:
+        r = requests.get(
+            FRANKFURTER_URL,
+            params={"base": "CHF", "symbols": "EUR"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        rate = data["rates"]["EUR"]
+        date_str = data.get("date", "?")
+        print(f"✅ Taux CHF→EUR via Frankfurter: {rate} (date: {date_str})")
+        return float(rate), f"Frankfurter ({date_str})"
+    except Exception as e:
+        print(f"⚠️ Frankfurter indisponible: {e}")
+    
+    # 2. ECB SDMX (fallback)
+    try:
+        today = date.today()
+        start = f"{today.year:04d}-{today.month:02d}-01"
+        end = f"{today.year:04d}-{today.month:02d}-31"
+        headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
+        
+        r = requests.get(
+            ECB_SDMX_URL,
+            params={"startPeriod": start, "endPeriod": end},
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        series = data["dataSets"][0]["series"]
+        first_key = next(iter(series.keys()))
+        obs = series[first_key].get("observations", {})
+        if obs:
+            last_idx = max(int(k) for k in obs.keys())
+            ecb_val = float(obs[str(last_idx)][0])
+            # ECB EXR.M.CHF.EUR.SP00.E = taux EUR/CHF, donc CHF→EUR = 2 - val
+            rate = round(2.0 - ecb_val, 6)
+            print(f"✅ Taux CHF→EUR via ECB: {rate}")
+            return rate, f"ECB ({today.year:04d}-{today.month:02d})"
+    except Exception as e:
+        print(f"⚠️ ECB indisponible: {e}")
+    
+    # 3. Hardcoded fallback
+    print(f"⚠️ APIs inaccessibles, utilisation du taux de secours: {FALLBACK_CHF_EUR}")
+    return FALLBACK_CHF_EUR, "Taux de secours (approximatif)"
 
 
 def norm(name: str) -> str:
@@ -49,88 +115,6 @@ def _to_date(d):
             return datetime.strptime(ds + "-01", "%Y-%m-%d").date()
         return datetime.strptime(ds, "%Y-%m-%d").date()
     raise TypeError(f"Unsupported date type: {type(d)}")
-
-
-def _month_start_end(y: int, m: int) -> tuple[str, str]:
-    # ECB accepts endPeriod with day=31 even for shorter months.
-    return f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-31"
-
-
-@lru_cache(maxsize=36)
-def fetch_chf_eur_monthly_value(y: int, m: int) -> float:
-    """
-    Returns the monthly end-of-period CHF/EUR value for the given year/month
-    from the ECB SDMX API (EXR.M.CHF.EUR.SP00.E).
-    
-    If the current month has no data yet (not published), falls back to the previous month.
-    """
-    start, end = _month_start_end(y, m)
-    headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
-
-    try:
-        r = requests.get(
-            ECB_SDMX_URL,
-            params={"startPeriod": start, "endPeriod": end},
-            headers=headers,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-
-        series = data["dataSets"][0]["series"]
-        first_key = next(iter(series.keys()))
-        obs = series[first_key].get("observations", {})
-        if obs:
-            last_idx = max(int(k) for k in obs.keys())
-            value = obs[str(last_idx)][0]
-            return float(value)
-    except Exception:
-        pass
-    
-    # Fallback: essayer le mois précédent
-    prev_m = m - 1 if m > 1 else 12
-    prev_y = y if m > 1 else y - 1
-    print(f"⚠️ Pas de données ECB pour {y:04d}-{m:02d}, fallback sur {prev_y:04d}-{prev_m:02d}")
-    
-    start2, end2 = _month_start_end(prev_y, prev_m)
-    try:
-        r2 = requests.get(
-            ECB_SDMX_URL,
-            params={"startPeriod": start2, "endPeriod": end2},
-            headers=headers,
-            timeout=20,
-        )
-        r2.raise_for_status()
-        data2 = r2.json()
-        series2 = data2["dataSets"][0]["series"]
-        first_key2 = next(iter(series2.keys()))
-        obs2 = series2[first_key2].get("observations", {})
-        if obs2:
-            last_idx2 = max(int(k) for k in obs2.keys())
-            value2 = obs2[str(last_idx2)][0]
-            return float(value2)
-    except Exception as e:
-        raise RuntimeError(
-            f"Aucune valeur ECB trouvée pour CHF/EUR sur {y:04d}-{m:02d} "
-            f"ni {prev_y:04d}-{prev_m:02d}: {e}"
-        )
-    
-    raise RuntimeError(f"Aucune valeur ECB trouvée pour CHF/EUR sur {y:04d}-{m:02d} ni {prev_y:04d}-{prev_m:02d}.")
-
-
-def compute_chf_to_eur_factor(extraction_end_date) -> float:
-    """
-    Option 1 (rigoureuse) : utilise le mois de la date de fin d'extraction TutorBird.
-    Règle métier : factor = 2 - valeur_mensuelle.
-    """
-    d = _to_date(extraction_end_date)
-    if d is None:
-        raise RuntimeError(
-            "Aucune valeur API trouvée : 'extraction_end_date' est manquant "
-            "(impossible de déterminer le mois pour CHF→EUR)."
-        )
-    v = fetch_chf_eur_monthly_value(d.year, d.month)
-    return round(2.0 - v, 6)
 
 
 def compute_teacher_recap(
@@ -190,8 +174,7 @@ def compute_teacher_recap(
                 return r
         return None
 
-    # We'll resolve FX only if needed (i.e., we actually encounter CHF lessons),
-    # BUT without fallback: if needed and API/date missing => error.
+    # FX: resolved lazily via fetch_chf_eur_rate()
     fx_info = None
     CHF_TO_EUR = None
 
@@ -201,17 +184,11 @@ def compute_teacher_recap(
             return
         if chf_to_eur_factor is not None:
             CHF_TO_EUR = float(chf_to_eur_factor)
-            fx_info = {"month": None, "monthly_value": None, "factor": CHF_TO_EUR}
+            fx_info = {"source": "manual", "factor": CHF_TO_EUR}
             return
-        d = _to_date(extraction_end_date)
-        if d is None:
-            raise RuntimeError(
-                "Aucune valeur API trouvée : impossible de convertir CHF→EUR car "
-                "'extraction_end_date' n'a pas été fourni."
-            )
-        monthly_value = fetch_chf_eur_monthly_value(d.year, d.month)
-        CHF_TO_EUR = round(2.0 - monthly_value, 6)
-        fx_info = {"month": f"{d.year:04d}-{d.month:02d}", "monthly_value": monthly_value, "factor": CHF_TO_EUR}
+        rate, source = fetch_chf_eur_rate()
+        CHF_TO_EUR = rate
+        fx_info = {"source": source, "factor": CHF_TO_EUR}
 
     # Compute
     teacher_totals = defaultdict(

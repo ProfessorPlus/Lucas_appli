@@ -193,8 +193,13 @@ def page_extract(ctx):
             
             if selected_notion_profs:
                 selected_entries = [e for e in notion_entries if e["professeur"] in selected_notion_profs]
-                total_notion = sum(e["taux_horaire_client"] * e["heures_faites"] for e in selected_entries)
-                st.info(f"📊 **{len(selected_entries)}** entrée(s) sélectionnée(s) — Total : **{total_notion:,.0f}** (client)")
+                # Grouper par devise
+                totals_by_currency = {}
+                for e in selected_entries:
+                    devise = e["devise_client"]
+                    totals_by_currency[devise] = totals_by_currency.get(devise, 0) + e["taux_horaire_client"] * e["heures_faites"]
+                total_str = " + ".join(f"**{amt:,.0f} {cur}**" for cur, amt in totals_by_currency.items())
+                st.info(f"📊 **{len(selected_entries)}** entrée(s) sélectionnée(s) — Total client : {total_str}")
         else:
             st.info("Aucune entrée dans la base Notion « Profs hors TutorBird ».")
     else:

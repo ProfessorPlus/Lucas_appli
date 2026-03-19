@@ -16,78 +16,58 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
-# --- FX (CHF -> EUR) via ECB SDMX API ---
-# Series: EXR.M.CHF.EUR.SP00.E (monthly end-of-period)
-# Business rule: factor = 2 - value
-# No hardcoded fallback: if the API fails or returns no value, we raise.
+# --- FX (CHF → EUR) via Frankfurter API (gratuit, données ECB) ---
 
 import requests
 from functools import lru_cache
 from datetime import date as _date, datetime as _datetime
 
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
 ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
+FALLBACK_CHF_EUR = 0.94
 
 
-def _to_date(d):
-    """Accepts date/datetime or ISO string (YYYY-MM or YYYY-MM-DD) and returns a date."""
-    if d is None:
-        return None
-    if isinstance(d, _date) and not isinstance(d, _datetime):
-        return d
-    if isinstance(d, _datetime):
-        return d.date()
-    if isinstance(d, str):
-        s = d.strip()
-        if len(s) == 7:
-            s = s + "-01"
-        return _datetime.strptime(s, "%Y-%m-%d").date()
-    raise TypeError(f"Unsupported date type: {type(d)}")
-
-
-def _month_start_end(y: int, m: int) -> tuple[str, str]:
-    return f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-31"
-
-
-@lru_cache(maxsize=36)
-def fetch_chf_eur_monthly_value(y: int, m: int) -> float:
-    start, end = _month_start_end(y, m)
-    headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
-
-    r = requests.get(
-        ECB_SDMX_URL,
-        params={"startPeriod": start, "endPeriod": end},
-        headers=headers,
-        timeout=20,
-    )
-    r.raise_for_status()
-    data = r.json()
-
-    series = data["dataSets"][0]["series"]
-    first_key = next(iter(series.keys()))
-    obs = series[first_key].get("observations", {})
-    if not obs:
-        raise RuntimeError(f"Aucune observation FX trouvée pour {y:04d}-{m:02d} (EXR.M.CHF.EUR.SP00.E).")
-
-    last_idx = max(int(k) for k in obs.keys())
-    value = obs[str(last_idx)][0]
-    return float(value)
-
-
-def require_chf_to_eur_factor(extraction_end_date):
-    """
-    Returns (factor, month_label, raw_value) using month of extraction_end_date.
-    Raises RuntimeError if date missing or API returns no value.
-    """
-    d = _to_date(extraction_end_date)
-    if d is None:
-        raise RuntimeError(
-            "Aucune valeur API trouvée de conversion : extraction_end_date manquante. "
-            "Impossible de calculer le taux CHF→EUR."
+@lru_cache(maxsize=1)
+def _fetch_chf_eur_rate():
+    """Fetches CHF→EUR rate. Frankfurter → ECB → hardcoded."""
+    # 1. Frankfurter
+    try:
+        r = requests.get(FRANKFURTER_URL, params={"base": "CHF", "symbols": "EUR"}, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return float(data["rates"]["EUR"]), f"Frankfurter ({data.get('date', '?')})"
+    except Exception:
+        pass
+    
+    # 2. ECB
+    try:
+        today = _date.today()
+        headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
+        r = requests.get(
+            ECB_SDMX_URL,
+            params={"startPeriod": f"{today.year}-{today.month:02d}-01", "endPeriod": f"{today.year}-{today.month:02d}-31"},
+            headers=headers, timeout=10,
         )
-    raw = fetch_chf_eur_monthly_value(d.year, d.month)
-    factor = round(2.0 - raw, 6)
-    month_label = f"{d.year:04d}-{d.month:02d}"
-    return factor, month_label, raw
+        r.raise_for_status()
+        data = r.json()
+        series = data["dataSets"][0]["series"]
+        obs = series[next(iter(series.keys()))].get("observations", {})
+        if obs:
+            val = float(obs[str(max(int(k) for k in obs.keys()))][0])
+            return round(2.0 - val, 6), f"ECB ({today.year}-{today.month:02d})"
+    except Exception:
+        pass
+    
+    return FALLBACK_CHF_EUR, "Taux de secours"
+
+
+def require_chf_to_eur_factor(extraction_end_date=None):
+    """
+    Returns (factor, source_label, factor_again) for PDF footer.
+    extraction_end_date is kept for signature compatibility but not used for lookup.
+    """
+    rate, source = _fetch_chf_eur_rate()
+    return rate, source, rate
 
 
 HEADER_BG = colors.HexColor("#1F3A67")
@@ -255,7 +235,7 @@ def _build_teacher_story(teacher_name, data, mois_label, logo_path, styles, chf_
     # Footer
     story.append(Spacer(1, 10*mm))
     story.append(Paragraph(
-        f"Taux de conversion (mois {fx_month_label}) : 1 CHF = {chf_to_eur_factor} EUR  (règle: 2 - {fx_raw_value})  |  ★ = tarif spécial",
+        f"Taux CHF→EUR : {chf_to_eur_factor} (source: {fx_month_label})  |  ★ = tarif spécial",
         styles["footer"]
     ))
     story.append(Paragraph("Généré automatiquement — Professor+", styles["footer"]))
