@@ -16,36 +16,57 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
-# --- FX (CHF → EUR) via Frankfurter API (gratuit, données ECB) ---
+# --- FX (CHF → EUR) via Frankfurter API — Moyenne mois précédent ---
 
 import requests
 from functools import lru_cache
 from datetime import date as _date, datetime as _datetime
+import calendar as _calendar
 
-FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
 ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
 FALLBACK_CHF_EUR = 0.94
 
 
 @lru_cache(maxsize=1)
 def _fetch_chf_eur_rate():
-    """Fetches CHF→EUR rate. Frankfurter → ECB → hardcoded."""
-    # 1. Frankfurter
+    """Fetches CHF→EUR average rate for previous complete month."""
+    today = _date.today()
+    
+    if today.month == 1:
+        prev_y, prev_m = today.year - 1, 12
+    else:
+        prev_y, prev_m = today.year, today.month - 1
+    
+    last_day = _calendar.monthrange(prev_y, prev_m)[1]
+    start_date = f"{prev_y:04d}-{prev_m:02d}-01"
+    end_date = f"{prev_y:04d}-{prev_m:02d}-{last_day:02d}"
+    month_label = f"{prev_y:04d}-{prev_m:02d}"
+    
+    # 1. Frankfurter — moyenne mensuelle
     try:
-        r = requests.get(FRANKFURTER_URL, params={"base": "CHF", "symbols": "EUR"}, timeout=10)
+        r = requests.get(
+            f"{FRANKFURTER_URL}/{start_date}..{end_date}",
+            params={"base": "CHF", "symbols": "EUR"},
+            timeout=15,
+        )
         r.raise_for_status()
         data = r.json()
-        return float(data["rates"]["EUR"]), f"Frankfurter ({data.get('date', '?')})"
+        rates = data.get("rates", {})
+        if rates:
+            values = [d["EUR"] for d in rates.values() if "EUR" in d]
+            if values:
+                avg = round(sum(values) / len(values), 6)
+                return avg, f"Moyenne {month_label} ({len(values)}j)"
     except Exception:
         pass
     
     # 2. ECB
     try:
-        today = _date.today()
         headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
         r = requests.get(
             ECB_SDMX_URL,
-            params={"startPeriod": f"{today.year}-{today.month:02d}-01", "endPeriod": f"{today.year}-{today.month:02d}-31"},
+            params={"startPeriod": start_date, "endPeriod": end_date},
             headers=headers, timeout=10,
         )
         r.raise_for_status()
@@ -54,7 +75,7 @@ def _fetch_chf_eur_rate():
         obs = series[next(iter(series.keys()))].get("observations", {})
         if obs:
             val = float(obs[str(max(int(k) for k in obs.keys()))][0])
-            return round(2.0 - val, 6), f"ECB ({today.year}-{today.month:02d})"
+            return round(2.0 - val, 6), f"ECB {month_label}"
     except Exception:
         pass
     

@@ -28,7 +28,7 @@ PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}
 # ===========================
 # Priority: Frankfurter API → ECB SDMX → hardcoded fallback
 
-FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
 ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
 
 # Hardcoded fallback (updated manually when needed)
@@ -38,38 +38,52 @@ FALLBACK_CHF_EUR = 0.94  # ~approximate 2026 rate
 @lru_cache(maxsize=36)
 def fetch_chf_eur_rate() -> tuple[float, str]:
     """
-    Fetches the CHF→EUR rate. Returns (rate, source_label).
+    Fetches the CHF→EUR rate as the AVERAGE of the previous complete month.
+    Returns (rate, source_label).
     
-    Chain: Frankfurter → ECB → hardcoded fallback.
-    Frankfurter returns the rate directly (1 CHF = X EUR).
+    Chain: Frankfurter monthly avg → ECB SDMX → hardcoded fallback.
     """
+    import calendar
     
-    # 1. Frankfurter API (gratuit, sans clé, données ECB)
+    today = date.today()
+    
+    # Mois précédent (complet)
+    if today.month == 1:
+        prev_y, prev_m = today.year - 1, 12
+    else:
+        prev_y, prev_m = today.year, today.month - 1
+    
+    last_day = calendar.monthrange(prev_y, prev_m)[1]
+    start_date = f"{prev_y:04d}-{prev_m:02d}-01"
+    end_date = f"{prev_y:04d}-{prev_m:02d}-{last_day:02d}"
+    month_label = f"{prev_y:04d}-{prev_m:02d}"
+    
+    # 1. Frankfurter API — moyenne mensuelle
     try:
         r = requests.get(
-            FRANKFURTER_URL,
+            f"{FRANKFURTER_URL}/{start_date}..{end_date}",
             params={"base": "CHF", "symbols": "EUR"},
-            timeout=10,
+            timeout=15,
         )
         r.raise_for_status()
         data = r.json()
-        rate = data["rates"]["EUR"]
-        date_str = data.get("date", "?")
-        print(f"✅ Taux CHF→EUR via Frankfurter: {rate} (date: {date_str})")
-        return float(rate), f"Frankfurter ({date_str})"
+        rates = data.get("rates", {})
+        
+        if rates:
+            values = [day_rates["EUR"] for day_rates in rates.values() if "EUR" in day_rates]
+            if values:
+                avg = round(sum(values) / len(values), 6)
+                print(f"✅ Taux CHF→EUR moyenne {month_label} via Frankfurter: {avg} ({len(values)} jours)")
+                return avg, f"Moyenne {month_label} ({len(values)}j, Frankfurter)"
     except Exception as e:
         print(f"⚠️ Frankfurter indisponible: {e}")
     
-    # 2. ECB SDMX (fallback)
+    # 2. ECB SDMX (fallback — valeur mensuelle)
     try:
-        today = date.today()
-        start = f"{today.year:04d}-{today.month:02d}-01"
-        end = f"{today.year:04d}-{today.month:02d}-31"
         headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
-        
         r = requests.get(
             ECB_SDMX_URL,
-            params={"startPeriod": start, "endPeriod": end},
+            params={"startPeriod": start_date, "endPeriod": end_date},
             headers=headers,
             timeout=10,
         )
@@ -81,15 +95,14 @@ def fetch_chf_eur_rate() -> tuple[float, str]:
         if obs:
             last_idx = max(int(k) for k in obs.keys())
             ecb_val = float(obs[str(last_idx)][0])
-            # ECB EXR.M.CHF.EUR.SP00.E = taux EUR/CHF, donc CHF→EUR = 2 - val
             rate = round(2.0 - ecb_val, 6)
-            print(f"✅ Taux CHF→EUR via ECB: {rate}")
-            return rate, f"ECB ({today.year:04d}-{today.month:02d})"
+            print(f"✅ Taux CHF→EUR via ECB {month_label}: {rate}")
+            return rate, f"ECB {month_label}"
     except Exception as e:
         print(f"⚠️ ECB indisponible: {e}")
     
     # 3. Hardcoded fallback
-    print(f"⚠️ APIs inaccessibles, utilisation du taux de secours: {FALLBACK_CHF_EUR}")
+    print(f"⚠️ APIs inaccessibles, taux de secours: {FALLBACK_CHF_EUR}")
     return FALLBACK_CHF_EUR, "Taux de secours (approximatif)"
 
 
