@@ -23,6 +23,7 @@ from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
+from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
 
 
 def page_accueil(ctx):
@@ -138,12 +139,73 @@ def page_extract(ctx):
     
     st.markdown("---")
     
+    # ===========================
+    # SECTION PROFS HORS TUTORBIRD (Notion)
+    # ===========================
+    st.markdown('<div class="section-title">📋 Profs hors TutorBird (Notion)</div>', unsafe_allow_html=True)
+    
+    secrets = ctx["load_secrets"]()
+    notion_entries = []
+    selected_notion_profs = set()
+    
+    if secrets and secrets.get("notion", {}).get("profs_hors_tutorbird_database_id"):
+        # Charger les données Notion
+        if "notion_profs_data" not in st.session_state or st.button("🔄 Rafraîchir depuis Notion", key="refresh_notion_profs"):
+            with st.spinner("Chargement depuis Notion..."):
+                result = fetch_notion_profs(secrets)
+                if result["success"]:
+                    st.session_state.notion_profs_data = result["entries"]
+                else:
+                    st.error(f"❌ Erreur Notion: {result['error']}")
+                    st.session_state.notion_profs_data = []
+        
+        notion_entries = st.session_state.get("notion_profs_data", [])
+        
+        if notion_entries:
+            st.success(f"✅ **{len(notion_entries)}** entrée(s) trouvée(s) dans Notion")
+            
+            # Afficher le tableau
+            table_data = []
+            for e in notion_entries:
+                table_data.append({
+                    "Famille": e["famille"],
+                    "Professeur": e["professeur"],
+                    "Élève": e["eleve"],
+                    "Heures": e["heures_faites"],
+                    "Taux client": f"{e['taux_horaire_client']} {e['devise_client']}",
+                    "Taux prof": f"{e['taux_horaire_prof']} {e['devise_prof']}",
+                    "Total client": f"{e['taux_horaire_client'] * e['heures_faites']:.0f} {e['devise_client']}",
+                })
+            
+            st.dataframe(table_data, hide_index=True, use_container_width=True)
+            
+            # Sélection des profs
+            all_profs = list({e["professeur"] for e in notion_entries if e["professeur"]})
+            all_profs.sort()
+            
+            selected_list = st.multiselect(
+                "👨‍🏫 Profs hors TutorBird à inclure",
+                all_profs,
+                default=all_profs,
+                key="notion_profs_select"
+            )
+            selected_notion_profs = set(selected_list)
+            
+            if selected_notion_profs:
+                selected_entries = [e for e in notion_entries if e["professeur"] in selected_notion_profs]
+                total_notion = sum(e["taux_horaire_client"] * e["heures_faites"] for e in selected_entries)
+                st.info(f"📊 **{len(selected_entries)}** entrée(s) sélectionnée(s) — Total : **{total_notion:,.0f}** (client)")
+        else:
+            st.info("Aucune entrée dans la base Notion « Profs hors TutorBird ».")
+    else:
+        st.warning("⚠️ `profs_hors_tutorbird_database_id` non configuré dans secrets.yaml")
+    
+    st.markdown("---")
+    
     # Info pour modification de factures
     st.info("💡 **Besoin de modifier des factures ?** Utilisez l'onglet *« Régénérer certaines familles »* dans **Créer liens paiement**, puis *« Régénérer certaines factures »* dans **Générer factures**.")
     
     if st.button("🚀 Lancer l'extraction", type="primary", width="stretch"):
-        secrets = ctx["load_secrets"]()
-        
         if not secrets:
             st.error("❌ Fichier secrets.yaml non trouvé !")
             return
@@ -155,7 +217,16 @@ def page_extract(ctx):
             progress_bar.progress(progress)
             status.info(message)
         
-        result = run_extraction(secrets, start_date, end_date, start_time, end_time, ctx["DATA_DIR"], callback)
+        # Convertir les profs Notion sélectionnés en format familles
+        notion_families = None
+        if notion_entries and selected_notion_profs:
+            notion_families = convert_notion_profs_to_families(notion_entries, selected_notion_profs)
+        
+        result = run_extraction(
+            secrets, start_date, end_date, start_time, end_time,
+            ctx["DATA_DIR"], callback,
+            notion_families=notion_families,
+        )
         
         if result["success"]:
             st.session_state.has_extracted = True
@@ -169,11 +240,15 @@ def page_extract(ctx):
             if os.path.exists(links_path):
                 os.remove(links_path)
             
+            notion_msg = ""
+            if result.get("notion_profs_added", 0) > 0:
+                notion_msg = f"\n            - 📋 **{result['notion_profs_added']}** prof(s) hors TutorBird ajouté(s)"
+            
             st.success(f"""
             ✅ **Extraction terminée !**
             - 📁 **{result['families']}** familles
             - 📚 **{result['lessons']}** leçons
-            - 💰 **{result['amount']:,.2f} CHF** total
+            - 💰 **{result['amount']:,.2f} CHF** total{notion_msg}
             """)
         else:
             st.error(f"❌ Erreur : {result['error']}")

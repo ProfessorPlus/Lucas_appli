@@ -61,29 +61,61 @@ def fetch_chf_eur_monthly_value(y: int, m: int) -> float:
     """
     Returns the monthly end-of-period CHF/EUR value for the given year/month
     from the ECB SDMX API (EXR.M.CHF.EUR.SP00.E).
+    
+    If the current month has no data yet (not published), falls back to the previous month.
     """
     start, end = _month_start_end(y, m)
     headers = {"Accept": "application/vnd.sdmx.data+json;version=1.0.0-wd"}
 
-    r = requests.get(
-        ECB_SDMX_URL,
-        params={"startPeriod": start, "endPeriod": end},
-        headers=headers,
-        timeout=20,
-    )
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = requests.get(
+            ECB_SDMX_URL,
+            params={"startPeriod": start, "endPeriod": end},
+            headers=headers,
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
 
-    series = data["dataSets"][0]["series"]
-    first_key = next(iter(series.keys()))
-    obs = series[first_key].get("observations", {})
-    if not obs:
-        raise RuntimeError(f"Aucune valeur API trouvée pour CHF/EUR sur {y:04d}-{m:02d}.")
-
-    # last observation within range
-    last_idx = max(int(k) for k in obs.keys())
-    value = obs[str(last_idx)][0]
-    return float(value)
+        series = data["dataSets"][0]["series"]
+        first_key = next(iter(series.keys()))
+        obs = series[first_key].get("observations", {})
+        if obs:
+            last_idx = max(int(k) for k in obs.keys())
+            value = obs[str(last_idx)][0]
+            return float(value)
+    except Exception:
+        pass
+    
+    # Fallback: essayer le mois précédent
+    prev_m = m - 1 if m > 1 else 12
+    prev_y = y if m > 1 else y - 1
+    print(f"⚠️ Pas de données ECB pour {y:04d}-{m:02d}, fallback sur {prev_y:04d}-{prev_m:02d}")
+    
+    start2, end2 = _month_start_end(prev_y, prev_m)
+    try:
+        r2 = requests.get(
+            ECB_SDMX_URL,
+            params={"startPeriod": start2, "endPeriod": end2},
+            headers=headers,
+            timeout=20,
+        )
+        r2.raise_for_status()
+        data2 = r2.json()
+        series2 = data2["dataSets"][0]["series"]
+        first_key2 = next(iter(series2.keys()))
+        obs2 = series2[first_key2].get("observations", {})
+        if obs2:
+            last_idx2 = max(int(k) for k in obs2.keys())
+            value2 = obs2[str(last_idx2)][0]
+            return float(value2)
+    except Exception as e:
+        raise RuntimeError(
+            f"Aucune valeur ECB trouvée pour CHF/EUR sur {y:04d}-{m:02d} "
+            f"ni {prev_y:04d}-{prev_m:02d}: {e}"
+        )
+    
+    raise RuntimeError(f"Aucune valeur ECB trouvée pour CHF/EUR sur {y:04d}-{m:02d} ni {prev_y:04d}-{prev_m:02d}.")
 
 
 def compute_chf_to_eur_factor(extraction_end_date) -> float:
@@ -199,6 +231,40 @@ def compute_teacher_recap(
             duration = lesson.get("duration_min") or 0
             hours = duration / 60.0
 
+            # ===========================
+            # CAS SPÉCIAL : Prof hors TutorBird (depuis Notion)
+            # ===========================
+            if lesson.get("source") == "notion_hors_tb":
+                notion_rate = lesson.get("notion_taux_prof", 0)
+                notion_devise = lesson.get("notion_devise_prof", "EUR")
+                
+                if notion_devise == "EUR":
+                    amount_eur = notion_rate * hours
+                    teacher_totals[t_name]["eur"] += amount_eur
+                    currency_label = "EUR (Notion)"
+                else:
+                    amount_chf = notion_rate * hours
+                    ensure_fx()
+                    amount_eur = amount_chf * CHF_TO_EUR
+                    teacher_totals[t_name]["chf_as_eur"] += amount_eur
+                    currency_label = "CHF→EUR (Notion)"
+                
+                teacher_totals[t_name]["nb_lessons"] += 1
+                teacher_totals[t_name]["total_hours"] += hours
+                teacher_totals[t_name]["details"].append({
+                    "date": lesson.get("date", ""),
+                    "student": lesson.get("student", ""),
+                    "family_parent": parent,
+                    "currency": currency_label,
+                    "duration_min": duration,
+                    "rate": notion_rate,
+                    "amount_eur": round(amount_eur, 2),
+                })
+                continue
+
+            # ===========================
+            # CAS NORMAL : Prof TutorBird (depuis secrets.yaml)
+            # ===========================
             cfg_key = teacher_lookup.get(norm(t_name))
             if not cfg_key:
                 continue

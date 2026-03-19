@@ -17,7 +17,7 @@ except ImportError:
     STORAGE_AVAILABLE = False
 
 
-def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir, callback=None):
+def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir, callback=None, notion_families=None):
     """
     Extrait les leçons de TutorBird pour une période donnée.
     
@@ -175,6 +175,22 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
             families[fam_id]["total_courses"] += amount
         
         # ===============================
+        # MERGE PROFS HORS TUTORBIRD (depuis Notion)
+        # ===============================
+        notion_count = 0
+        if notion_families:
+            update(85, "📋 Ajout des profs hors TutorBird...")
+            for fam_id, fam_data in notion_families.items():
+                if fam_id not in families:
+                    families[fam_id] = fam_data
+                    notion_count += 1
+                else:
+                    # Famille déjà existante (rare) — ajouter les leçons
+                    families[fam_id]["lessons"].extend(fam_data.get("lessons", []))
+                    families[fam_id]["total_courses"] += fam_data.get("total_courses", 0)
+                    notion_count += 1
+        
+        # ===============================
         # SAUVEGARDE (locale + Google Drive si cloud)
         # ===============================
         update(90, "💾 Sauvegarde...")
@@ -206,6 +222,7 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
             "families": len(families),
             "lessons": total_lessons,
             "amount": total_amount,
+            "notion_profs_added": notion_count,
             "output_path": output_path,
             "drive_saved": drive_saved
         }
