@@ -116,8 +116,49 @@ def page_extract(ctx):
     st.info("Sélectionnez la période pour extraire les leçons depuis TutorBird.")
     
     today = datetime.today()
-    first_day = today.replace(day=1)
-    last_day = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+    
+    # ===========================
+    # SÉLECTION RAPIDE
+    # ===========================
+    st.markdown("**⚡ Sélection rapide**")
+    
+    # Calcul mois précédent
+    if today.month == 1:
+        prev_y, prev_m = today.year - 1, 12
+    else:
+        prev_y, prev_m = today.year, today.month - 1
+    
+    # Calcul avant-précédent
+    if prev_m == 1:
+        prev2_y, prev2_m = prev_y - 1, 12
+    else:
+        prev2_y, prev2_m = prev_y, prev_m - 1
+    
+    MONTHS_FR = ctx["MONTHS_FR"]
+    
+    col_q1, col_q2, col_q3 = st.columns(3)
+    with col_q1:
+        if st.button(f"📅 {MONTHS_FR[prev_m - 1]} {prev_y}", width="stretch", key="quick_prev"):
+            st.session_state.extract_quick_month = (prev_y, prev_m)
+            st.rerun()
+    with col_q2:
+        if st.button(f"📅 {MONTHS_FR[prev2_m - 1]} {prev2_y}", width="stretch", key="quick_prev2"):
+            st.session_state.extract_quick_month = (prev2_y, prev2_m)
+            st.rerun()
+    with col_q3:
+        if st.button(f"📅 {MONTHS_FR[today.month - 1]} {today.year} (en cours)", width="stretch", key="quick_current"):
+            st.session_state.extract_quick_month = (today.year, today.month)
+            st.rerun()
+    
+    # Appliquer la sélection rapide
+    quick = st.session_state.get("extract_quick_month")
+    if quick:
+        qy, qm = quick
+        first_day = datetime(qy, qm, 1).date()
+        last_day = datetime(qy, qm, calendar.monthrange(qy, qm)[1]).date()
+    else:
+        first_day = today.replace(day=1)
+        last_day = today.replace(day=calendar.monthrange(today.year, today.month)[1])
     
     col1, col2 = st.columns(2)
     with col1:
@@ -1915,6 +1956,12 @@ def page_config(ctx):
             if not teachers:
                 st.info("Aucun professeur configuré.")
             else:
+                # Récupérer le taux FX pour l'auto CHF
+                from scripts.recap_profs import fetch_chf_eur_rate
+                fx_rate, fx_source = fetch_chf_eur_rate()
+                
+                st.info(f"💱 Taux CHF→EUR actuel : **{fx_rate}** ({fx_source})")
+                
                 # Créer les données pour le tableau
                 teacher_names = list(teachers.keys())
                 
@@ -1922,10 +1969,12 @@ def page_config(ctx):
                 table_data = []
                 for name in teacher_names:
                     t_data = teachers[name]
+                    auto_chf = t_data.get("auto_chf", False)
                     table_data.append({
                         "Professeur": name,
                         "CHF/h": float(t_data.get("pay_rate", {}).get("chf", 0)),
                         "EUR/h": float(t_data.get("pay_rate", {}).get("eur", 0)),
+                        "Auto CHF": auto_chf,
                         "Stripe Connect ID": t_data.get("connect_account_id") or "",
                         "Supprimer": False
                     })
@@ -1943,7 +1992,7 @@ def page_config(ctx):
                             "💰 CHF/h",
                             min_value=0,
                             max_value=500,
-                            step=0.1,
+                            step=0.01,
                             format="%.2f",
                             width="small"
                         ),
@@ -1951,9 +2000,15 @@ def page_config(ctx):
                             "💶 EUR/h",
                             min_value=0,
                             max_value=500,
-                            step=0.1,
+                            step=0.01,
                             format="%.2f",
                             width="small"
+                        ),
+                        "Auto CHF": st.column_config.CheckboxColumn(
+                            "🔄 Auto",
+                            help="Si coché, le taux CHF est calculé automatiquement pour que la conversion CHF→EUR donne exactement le taux EUR indiqué",
+                            width="small",
+                            default=False
                         ),
                         "Stripe Connect ID": st.column_config.TextColumn(
                             "🔗 Stripe Connect ID",
@@ -1970,21 +2025,41 @@ def page_config(ctx):
                     key="teachers_table"
                 )
                 
+                # Aperçu des taux auto-calculés
+                auto_preview = []
+                for row in edited_df:
+                    if row.get("Auto CHF") and row["EUR/h"] > 0 and fx_rate > 0:
+                        computed_chf = round(row["EUR/h"] / fx_rate, 2)
+                        if abs(computed_chf - row["CHF/h"]) > 0.01:
+                            auto_preview.append(f"**{row['Professeur']}** : CHF/h {row['CHF/h']:.2f} → **{computed_chf:.2f}** (pour obtenir {row['EUR/h']:.2f} €)")
+                
+                if auto_preview:
+                    st.warning("🔄 **Auto CHF — Modifications à appliquer :**\n" + "\n".join(f"- {p}" for p in auto_preview))
+                
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     if st.button("💾 Sauvegarder les modifications", type="primary", width="stretch"):
-                        # Mettre à jour les données
                         for row in edited_df:
                             name = row["Professeur"]
                             if name in teachers:
-                                teachers[name]["pay_rate"]["chf"] = float(row["CHF/h"])
-                                teachers[name]["pay_rate"]["eur"] = float(row["EUR/h"])
+                                eur_rate = float(row["EUR/h"])
+                                chf_rate = float(row["CHF/h"])
+                                is_auto = row.get("Auto CHF", False)
+                                
+                                # Si Auto CHF activé, recalculer CHF depuis EUR
+                                if is_auto and eur_rate > 0 and fx_rate > 0:
+                                    chf_rate = round(eur_rate / fx_rate, 2)
+                                
+                                teachers[name]["pay_rate"]["chf"] = chf_rate
+                                teachers[name]["pay_rate"]["eur"] = eur_rate
+                                teachers[name]["auto_chf"] = is_auto
                                 teachers[name]["connect_account_id"] = (row["Stripe Connect ID"] or "").strip()
                         
                         secrets["teachers"] = teachers
                         ctx["save_secrets"](secrets)
                         st.success("✅ Modifications sauvegardées !")
+                        st.rerun()
                 
                 with col2:
                     # Compter les suppressions cochées
