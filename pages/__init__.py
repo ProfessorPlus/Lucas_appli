@@ -830,6 +830,8 @@ def page_payment(ctx):
                 def callback(p, m):
                     progress.progress(p)
                     status.info(m)
+
+                result = None
                 
                 if no_split_t2:
                     if not secrets_no_prof_t2:
@@ -851,12 +853,12 @@ def page_payment(ctx):
                         skip_if_exists=False,  # Forcer la régénération
                     )
                 
-                if result["success"]:
+                if result and result["success"]:
                     st.session_state.regenerated_families = selected_family_ids
                     st.session_state.show_goto_invoices_tab2 = True
                     st.success(f"✅ **{result['links_count']}** liens régénérés !")
                     st.rerun()
-                else:
+                elif result:
                     st.error(f"❌ Erreur : {result['error']}")
             
             # Bouton vers génération factures
