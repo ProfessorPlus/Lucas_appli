@@ -1,3 +1,5 @@
+print("✅ CONFIG_LOADER NEW VERSION LOADED")
+
 """
 🔧 Config Loader - Version Hybride
 ==================================
