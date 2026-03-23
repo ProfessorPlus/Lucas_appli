@@ -215,8 +215,8 @@ def _load_yaml_file(filename, local_names=None, cache_dict=None, cache_key=None,
                     except Exception as e:
                         print(f"⚠️ Erreur lecture {path}: {e}")
     
-    # Update cache
-    if cache_dict is not None and cache_key:
+    # Update cache (only if we got a result)
+    if cache_dict is not None and cache_key and result is not None:
         cache_dict[cache_key] = result
     
     return result

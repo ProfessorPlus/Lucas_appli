@@ -739,6 +739,7 @@ def page_payment(ctx):
             if no_split_mode:
                 if not secrets_no_prof:
                     st.error("❌ secrets_no_prof.yaml manquant !")
+                    result = None
                 else:
                     result = run_create_payment_links_no_split(
                         data, secrets_no_prof, familles_euros,
@@ -758,11 +759,11 @@ def page_payment(ctx):
                     payment_method_types=payment_method_types,
                 )
             
-            if result["success"]:
+            if result and result["success"]:
                 st.session_state.show_payment_report = True
                 st.session_state.no_split_mode_active = no_split_mode  # Mémoriser le mode
                 st.rerun()
-            else:
+            elif result:
                 st.error(f"❌ Erreur : {result['error']}")
         
         # Bouton vers génération factures (après régénération)
