@@ -249,6 +249,8 @@ def load_secrets(force_reload=False):
 
 
 def load_secrets_no_prof(force_reload=False):
+    print("🔍 DEBUG: load_secrets_no_prof() appelé")    # ← AJOUTE CETTE LIGNE
+    """
     """
     Charge secrets_no_prof.yaml (config sans transfert) depuis:
     1. Streamlit Cloud: secrets_no_prof.yaml sur Google Drive (dossier config/)
