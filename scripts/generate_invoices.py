@@ -624,6 +624,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         # UPLOAD VERS GOOGLE DRIVE (si cloud)
         # ===============================
         drive_saved = False
+        print(f"🔍 DEBUG: STORAGE_AVAILABLE={STORAGE_AVAILABLE}, factures_generees={factures_generees}")
         if STORAGE_AVAILABLE and factures_generees > 0:
             update(95, "☁️ Upload vers Google Drive...")
             try:
