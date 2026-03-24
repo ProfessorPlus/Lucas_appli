@@ -1003,13 +1003,28 @@ def _invoice_folder_choices():
 def _ensure_local_invoice_folder(folder):
     if not folder:
         return None
-    if folder.get("path") and os.path.exists(folder["path"]):
-        return folder["path"]
-    if folder.get("source") in {"drive", "both"}:
+
+    folder_path = folder.get("path")
+    source = str(folder.get("source", "")).lower()
+
+    # 1) Si le dossier local existe ET contient déjà des PDFs, on l'utilise tel quel.
+    if folder_path and os.path.exists(folder_path):
+        for root, _, files in os.walk(folder_path):
+            if any(f.lower().endswith(".pdf") for f in files):
+                return folder_path
+
+    # 2) Si le dossier existe aussi sur Drive (source=drive ou both), on le recharge depuis Drive.
+    # Cela évite qu'après un reboot du runtime Streamlit, on garde un chemin local vide/stale.
+    if source in {"drive", "both"}:
         result = load_invoice_folder(folder.get("year"), folder.get("month"))
-        if result.get("success"):
+        if result.get("success") and result.get("local_path"):
             return result.get("local_path")
-    return folder.get("path")
+
+    # 3) Dernier fallback : si le chemin local existe encore, on le renvoie quand même.
+    if folder_path and os.path.exists(folder_path):
+        return folder_path
+
+    return None
 
 
 def _render_invoice_folder_selector(mode_key, selection_key, default_to_latest=True):
