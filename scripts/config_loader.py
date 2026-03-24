@@ -1,5 +1,3 @@
-print("✅ CONFIG_LOADER NEW VERSION LOADED")
-
 """
 🔧 Config Loader - Version Hybride
 ==================================
@@ -104,46 +102,41 @@ def _download_yaml_from_drive(drive_service, folder_id, filename):
     """
     try:
         from googleapiclient.http import MediaIoBaseDownload
-
-        print(f"🔍 DEBUG Drive: recherche de {filename} depuis root_folder_id={folder_id}")
-
+        
         # D'abord trouver le dossier config
         query = f"name='config' and mimeType='application/vnd.google-apps.folder' and '{folder_id}' in parents and trashed=false"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
         config_files = results.get('files', [])
-
+        
         config_folder_id = config_files[0]['id'] if config_files else folder_id
-        print(f"🔍 DEBUG Drive: config_folder_id={config_folder_id}")
-
+        
         # Chercher le fichier dans config/
         query = f"name='{filename}' and '{config_folder_id}' in parents and trashed=false"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
         files = results.get('files', [])
-
+        
         if not files:
-            print(f"🔍 DEBUG Drive: {filename} absent de config/, tentative à la racine")
             # Essayer à la racine du dossier Professor_Plus_Data
             query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-            results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+            results = drive_service.files().list(q=query, fields="files(id)").execute()
             files = results.get('files', [])
-
+        
         if not files:
             print(f"⚠️ {filename} non trouvé sur Google Drive")
             return None
-
+        
         file_id = files[0]['id']
-        print(f"✅ DEBUG Drive: {filename} trouvé avec file_id={file_id}")
         request = drive_service.files().get_media(fileId=file_id)
-
+        
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
-
+        
         buffer.seek(0)
         return buffer.read().decode('utf-8')
-
+        
     except Exception as e:
         print(f"⚠️ Erreur téléchargement {filename}: {e}")
         return None
@@ -194,41 +187,33 @@ def _load_yaml_file(filename, local_names=None, cache_dict=None, cache_key=None,
         return None
     
     result = None
-    cloud_mode = is_streamlit_cloud()
-    print(f"🔍 DEBUG YAML: chargement de {filename} | cloud_mode={cloud_mode}")
-
-    # 1. Essayer Google Drive si on est en mode cloud
-    if cloud_mode:
-        root_folder_id = _get_root_folder_id()
-        print(f"🔍 DEBUG YAML: root_folder_id={root_folder_id}")
+    
+    # 1. Mode Streamlit Cloud
+    if is_streamlit_cloud():
         drive_service = _get_drive_service()
         if drive_service:
-            yaml_content = _download_yaml_from_drive(drive_service, root_folder_id, filename)
+            yaml_content = _download_yaml_from_drive(drive_service, _get_root_folder_id(), filename)
             if yaml_content:
                 try:
                     result = yaml.safe_load(yaml_content)
                     print(f"✅ {filename} chargé depuis Google Drive")
                 except Exception as e:
                     print(f"❌ Erreur parsing {filename}: {e}")
-            else:
-                print(f"⚠️ Aucun contenu Drive pour {filename}, fallback local...")
         else:
-            print("❌ Impossible de se connecter à Google Drive, fallback local...")
-
-    # 2. Fallback local (toujours essayé si rien trouvé)
-    if result is None and local_names:
-        for path in local_names:
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        result = yaml.safe_load(f)
-                    print(f"✅ {filename} chargé depuis {path}")
-                    break
-                except Exception as e:
-                    print(f"⚠️ Erreur lecture {path}: {e}")
-
-    if result is None:
-        print(f"❌ {filename} introuvable ni sur Google Drive ni en local")
+            print("❌ Impossible de se connecter à Google Drive")
+    
+    # 2. Mode local
+    else:
+        if local_names:
+            for path in local_names:
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            result = yaml.safe_load(f)
+                        print(f"✅ {filename} chargé depuis {path}")
+                        break
+                    except Exception as e:
+                        print(f"⚠️ Erreur lecture {path}: {e}")
     
     # Update cache (only if we got a result)
     if cache_dict is not None and cache_key and result is not None:
@@ -264,24 +249,35 @@ def load_secrets(force_reload=False):
 
 
 def load_secrets_no_prof(force_reload=False):
-    print("🔍 DEBUG: load_secrets_no_prof() appelé")
     """
-    Charge secrets_no_prof.yaml (config sans transfert) depuis:
-    1. Streamlit Cloud: secrets_no_prof.yaml sur Google Drive (dossier config/)
-    2. Local: fichier secrets_no_prof.yaml dans config/ ou racine
+    Charge la config "sans transfert" depuis la section stripe_no_split de secrets.yaml.
+    
+    Retourne un dict compatible avec l'ancien format secrets_no_prof.yaml:
+    {
+        "stripe": {"platform_secret_key": "...", "platform_account_id": "..."},
+        "notion": {...},
+        "tutorbird": {...},
+        ...
+    }
     """
-    return _load_yaml_file(
-        filename="secrets_no_prof.yaml",
-        local_names=[
-            os.path.join(os.path.dirname(__file__), "..", "config", "secrets_no_prof.yaml"),
-            os.path.join(os.path.dirname(__file__), "..", "secrets_no_prof.yaml"),
-            "config/secrets_no_prof.yaml",
-            "secrets_no_prof.yaml",
-        ],
-        cache_dict=_cache,
-        cache_key="secrets_no_prof",
-        force_reload=force_reload,
-    )
+    secrets = load_secrets(force_reload=force_reload)
+    if not secrets:
+        return None
+    
+    no_split = secrets.get("stripe_no_split")
+    if not no_split:
+        print("⚠️ Section 'stripe_no_split' absente de secrets.yaml")
+        return None
+    
+    # Construire un dict compatible avec l'ancien format
+    result = dict(secrets)  # Copie (notion, tutorbird, etc. restent)
+    result["stripe"] = {
+        "platform_secret_key": no_split.get("platform_secret_key", ""),
+        "platform_account_id": no_split.get("platform_account_id", ""),
+    }
+    
+    print("✅ Config no-split chargée depuis secrets.yaml (section stripe_no_split)")
+    return result
 
 
 def clear_secrets_cache():

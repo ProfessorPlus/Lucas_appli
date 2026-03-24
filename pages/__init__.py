@@ -738,7 +738,7 @@ def page_payment(ctx):
             # Mode sans transfert
             if no_split_mode:
                 if not secrets_no_prof:
-                    st.error("❌ secrets_no_prof.yaml manquant !")
+                    st.error("❌ Section stripe_no_split manquante dans secrets.yaml !")
                     result = None
                 else:
                     result = run_create_payment_links_no_split(
@@ -830,12 +830,10 @@ def page_payment(ctx):
                 def callback(p, m):
                     progress.progress(p)
                     status.info(m)
-
-                result = None
                 
                 if no_split_t2:
                     if not secrets_no_prof_t2:
-                        st.error("❌ secrets_no_prof.yaml manquant !")
+                        st.error("❌ Section stripe_no_split manquante dans secrets.yaml !")
                     else:
                         result = run_create_payment_links_no_split(
                             data, secrets_no_prof_t2, familles_euros,
@@ -853,12 +851,12 @@ def page_payment(ctx):
                         skip_if_exists=False,  # Forcer la régénération
                     )
                 
-                if result and result["success"]:
+                if result["success"]:
                     st.session_state.regenerated_families = selected_family_ids
                     st.session_state.show_goto_invoices_tab2 = True
                     st.success(f"✅ **{result['links_count']}** liens régénérés !")
                     st.rerun()
-                elif result:
+                else:
                     st.error(f"❌ Erreur : {result['error']}")
             
             # Bouton vers génération factures
@@ -889,7 +887,7 @@ def _render_payment_options(ctx, secrets, prefix):
         "🏦 Tout recevoir sur mon compte (sans transfert aux profs)",
         value=False,
         key=f"no_split_{prefix}",
-        help="Active le mode sans split : tous les paiements vont directement sur votre compte Stripe principal (utilise secrets_no_prof.yaml)"
+        help="Active le mode sans split : tous les paiements vont directement sur votre compte Stripe principal (utilise la section stripe_no_split de secrets.yaml)"
     )
     
     # Méthodes de paiement (communes aux deux modes)
@@ -935,12 +933,12 @@ def _render_payment_options(ctx, secrets, prefix):
     st.warning("⚠️ Vérifiez dans les paramètres Stripe que ces méthodes sont bien actives !")
     
     if no_split_mode:
-        st.warning("⚠️ **Mode sans transfert activé** — Aucun split ne sera créé. Tous les paiements iront sur le compte Stripe défini dans `secrets_no_prof.yaml`.")
+        st.warning("⚠️ **Mode sans transfert activé** — Aucun split ne sera créé. Tous les paiements iront sur le compte Stripe défini dans la section `stripe_no_split` de secrets.yaml.")
         
         secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
         if not secrets_no_prof:
-            st.error("❌ `secrets_no_prof.yaml` non trouvé dans config/ ou à la racine du projet.")
-            st.info("Créez ce fichier avec votre clé Stripe alternative (même structure que secrets.yaml mais sans teachers).")
+            st.error("❌ Section `stripe_no_split` manquante dans secrets.yaml.")
+            st.info("Ajoutez `stripe_no_split: {platform_secret_key: sk_live_..., platform_account_id: acct_...}` dans secrets.yaml.")
             return None, None, payment_method_types, True, None
         
         return None, None, payment_method_types, True, secrets_no_prof
@@ -1414,7 +1412,7 @@ def page_sync(ctx):
             
             secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
             if not secrets_no_prof:
-                st.error("❌ secrets_no_prof.yaml non trouvé !")
+                st.error("❌ Section stripe_no_split manquante dans secrets.yaml !")
                 return
             
             result1 = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
