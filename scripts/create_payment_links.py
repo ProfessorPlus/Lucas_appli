@@ -229,11 +229,15 @@ def run_create_payment_links(
                 tb_name = L.get("teacher") or ""
                 normalized_name = normalize(tb_name)
                 tid = TEACHER_MAP.get(normalized_name)
+                is_notion_lesson = L.get("source") == "notion_hors_tb"
 
                 if not tid:
-                    if tb_name and tb_name not in profs_inconnus:
-                        profs_inconnus.append(tb_name)
-                    continue
+                    if is_notion_lesson and tb_name:
+                        tid = tb_name.strip()
+                    else:
+                        if tb_name and tb_name not in profs_inconnus:
+                            profs_inconnus.append(tb_name)
+                        continue
 
                 lessons_by_teacher.setdefault(tid, []).append(L)
 
@@ -241,6 +245,7 @@ def run_create_payment_links(
                 teacher_cfg = TEACHERS.get(tid, {})
                 teacher_name = tid
                 connect_id = teacher_cfg.get("connect_account_id") or ""
+                is_notion_teacher = any(L.get("source") == "notion_hors_tb" for L in t_lessons)
 
                 total_amount = sum(float(L.get("amount") or 0) for L in t_lessons)
                 if total_amount <= 0:
@@ -253,9 +258,12 @@ def run_create_payment_links(
 
                 students = list({L.get("student", "") for L in t_lessons if L.get("student")})
                 special_rate = get_special_pay_rate(teacher_name, parent_name, students)
+                notion_prof_currency = (t_lessons[0].get("notion_devise_prof") or currency).lower() if is_notion_teacher else currency
                 if special_rate is not None:
                     pay_rate = float(special_rate)
                     tarifs_speciaux_appliques += 1
+                elif is_notion_teacher and t_lessons[0].get("notion_taux_prof") is not None:
+                    pay_rate = float(t_lessons[0].get("notion_taux_prof") or 0)
                 else:
                     pay_rate = float(teacher_cfg.get("pay_rate", {}).get(currency, 0))
 
@@ -305,10 +313,10 @@ def run_create_payment_links(
                     },
                     "payment_intent_data": {
                         "metadata": {
-                            "teacher_account": connect_id or "platform",
+                            "teacher_account": connect_id or ("manual_notion" if is_notion_teacher else "platform"),
                             "gross_amount": f"{total_amount:.2f} {currency.upper()}",
                             "platform_fee": f"{platform_fee/100:.2f} {currency.upper()}",
-                            "teacher_share": f"{teacher_cents/100:.2f} {currency.upper()}",
+                            "teacher_share": f"{teacher_cents/100:.2f} {(notion_prof_currency if is_notion_teacher else currency).upper()}",
                             "invoice_date": today,
                             "product_name": product_name,
                         }
@@ -338,8 +346,10 @@ def run_create_payment_links(
                     "students_label": product_name,
                     "amount": total_amount,
                     "teacher_pay": teacher_amount,
+                    "teacher_pay_currency": (notion_prof_currency if is_notion_teacher else currency),
                     "payment_link": link.url,
                     "invoice_date": today,
+                    "source": "notion_hors_tb" if is_notion_teacher else "tutorbird",
                 })
 
         missing_families = []

@@ -17,6 +17,25 @@ from datetime import datetime
 
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+MONTHS_EN = ["January", "February", "March", "April", "May", "June",
+             "July", "August", "September", "October", "November", "December"]
+MONTH_TRANSLATIONS = {fr.lower(): en for fr, en in zip(MONTHS_FR, MONTHS_EN)}
+
+
+def _normalize_language(value):
+    value = (value or "").strip().lower()
+    if value.startswith("en") or "anglais" in value or "english" in value:
+        return "en"
+    return "fr"
+
+
+def _translate_month_name(month_name, language="fr"):
+    if not month_name:
+        now = datetime.now()
+        month_name = MONTHS_FR[now.month - 1]
+    if language == "en":
+        return MONTH_TRANSLATIONS.get(month_name.strip().lower(), month_name)
+    return month_name
 
 
 def _normalize_text(s):
@@ -37,7 +56,13 @@ def _normalize_text(s):
 def _clean_folder_name(s):
     if not isinstance(s, str):
         return ""
-    return re.sub(r"[^a-zA-Z0-9_\- ]", "", s).strip().replace(" ", "_")
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.replace("’", " ").replace("'", " ")
+    s = re.sub(r"[^A-Za-z0-9_\- ]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.replace(" ", "_")
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
 
 
 def _collect_pdf_paths(invoice_folder):
@@ -52,30 +77,87 @@ def _collect_pdf_paths(invoice_folder):
     return pdf_paths
 
 
-def get_default_email_template(month_name=None, year=None):
-    """Retourne le template d'email par défaut."""
+def get_default_email_template(month_name=None, year=None, language="fr"):
+    """Retourne le template d'email par défaut en français ou en anglais."""
 
     if not month_name:
         now = datetime.now()
         month_name = MONTHS_FR[now.month - 1]
         year = now.year
 
+    language = _normalize_language(language)
+    month_label = _translate_month_name(month_name, language)
+
+    if language == "en":
+        return {
+            "subject": f"Invoice(s) - Tutoring - {month_label} {year}",
+            "body": f"""Hello,
+
+I hope you are well.
+
+Please find attached your invoice(s) for tutoring lessons for {month_label} {year}.
+
+You can pay directly by clicking the "Pay online" button in the PDF invoice.
+
+Please proceed with payment as soon as possible, before 10 {month_label} {year}.
+
+Kind regards,
+Professor+
+"""
+        }
+
     return {
-        "subject": f"Facture(s) - Soutien scolaire - {month_name} {year}",
+        "subject": f"Facture(s) - Soutien scolaire - {month_label} {year}",
         "body": f"""Bonjour,
 
 J'espère que vous allez bien.
 
-Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_name} {year}.
+Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_label} {year}.
 
 Vous pouvez régler directement en cliquant sur le bouton "Payer en ligne" dans la facture PDF.
 
-Merci de procéder au paiement dans les plus brefs délais, avant le 10 {month_name} {year}.
+Merci de procéder au paiement dans les plus brefs délais, avant le 10 {month_label} {year}.
 
 Cordialement,
 Professor+
 """
     }
+
+
+def _translate_custom_template(subject, body, month_name, year, language="fr"):
+    language = _normalize_language(language)
+    if language != "en":
+        return subject, body
+
+    replacements = [
+        ("Facture(s)", "Invoice(s)"),
+        ("Factures", "Invoices"),
+        ("Facture", "Invoice"),
+        ("Soutien scolaire", "Tutoring"),
+        ("Bonjour,", "Hello,"),
+        ("J'espère que vous allez bien.", "I hope you are well."),
+        ("Veuillez trouver ci-joint votre/vos facture(s)", "Please find attached your invoice(s)"),
+        ("Veuillez trouver ci-joint vos factures", "Please find attached your invoices"),
+        ("Veuillez trouver ci-joint votre facture", "Please find attached your invoice"),
+        ("pour les cours de soutien scolaire", "for tutoring lessons"),
+        ("Vous pouvez régler directement en cliquant sur le bouton \"Payer en ligne\" dans la facture PDF.",
+         "You can pay directly by clicking the \"Pay online\" button in the PDF invoice."),
+        ("Merci de procéder au paiement dans les plus brefs délais,", "Please proceed with payment as soon as possible,"),
+        ("avant le", "before"),
+        ("Cordialement,", "Kind regards,"),
+    ]
+
+    translated_subject = subject or ""
+    translated_body = body or ""
+    for src, dst in replacements:
+        translated_subject = translated_subject.replace(src, dst)
+        translated_body = translated_body.replace(src, dst)
+
+    for fr, en in MONTH_TRANSLATIONS.items():
+        translated_subject = re.sub(fr, en, translated_subject, flags=re.IGNORECASE)
+        translated_body = re.sub(fr, en, translated_body, flags=re.IGNORECASE)
+
+    return translated_subject, translated_body
 
 
 def get_families_from_folder(invoice_folder, data):
@@ -143,6 +225,7 @@ def get_families_from_folder(invoice_folder, data):
                 "invoices": invoices,
                 "total": total_amount,
                 "invoice_count": len(invoices),
+                "language": _normalize_language(fam.get("language") or fam.get("invoice_language") or (fam.get("lessons", [{}])[0].get("notion_language") if fam.get("lessons") else "fr")),
             })
 
     return families
@@ -177,6 +260,18 @@ def run_send_invoices(secrets, data, invoice_folder,
         template = get_default_email_template()
         subject = custom_subject or template["subject"]
         body = custom_body or template["body"]
+
+        folder_name = os.path.basename(invoice_folder.rstrip(os.sep))
+        month_name = None
+        year = datetime.now().year
+        month_match = re.match(r"^([A-Za-zÀ-ÿ]+)\s+(\d{4})", folder_name)
+        if month_match:
+            month_name = month_match.group(1)
+            year = int(month_match.group(2))
+        else:
+            now = datetime.now()
+            month_name = MONTHS_FR[now.month - 1]
+            year = now.year
 
         update(10, "📧 Préparation des emails...")
 
@@ -215,19 +310,31 @@ def run_send_invoices(secrets, data, invoice_folder,
                 msg["From"] = sender_email
                 msg["To"] = recipient
 
-                final_subject = subject
-                if family["invoice_count"] > 1:
-                    final_subject = final_subject.replace("Facture -", "Factures -")
+                language = family.get("language", "fr")
+                if custom_subject or custom_body:
+                    final_subject, final_body = _translate_custom_template(subject, body, month_name, year, language)
                 else:
-                    final_subject = final_subject.replace("Facture(s)", "Facture")
-                msg["Subject"] = final_subject
+                    lang_template = get_default_email_template(month_name, year, language)
+                    final_subject = lang_template["subject"]
+                    final_body = lang_template["body"]
 
-                final_body = body
-                if family["invoice_count"] > 1:
-                    final_body = final_body.replace("votre/vos facture(s)", "vos factures")
-                    final_body = final_body.replace("ci-joint votre facture", "ci-joint vos factures")
+                if language == "en":
+                    if family["invoice_count"] > 1:
+                        final_subject = final_subject.replace("Invoice -", "Invoices -").replace("Invoice(s)", "Invoices")
+                        final_body = final_body.replace("invoice(s)", "invoices")
+                    else:
+                        final_subject = final_subject.replace("Invoice(s)", "Invoice")
+                        final_body = final_body.replace("invoice(s)", "invoice")
                 else:
-                    final_body = final_body.replace("votre/vos facture(s)", "votre facture")
+                    if family["invoice_count"] > 1:
+                        final_subject = final_subject.replace("Facture -", "Factures -")
+                        final_body = final_body.replace("votre/vos facture(s)", "vos factures")
+                        final_body = final_body.replace("ci-joint votre facture", "ci-joint vos factures")
+                    else:
+                        final_subject = final_subject.replace("Facture(s)", "Facture")
+                        final_body = final_body.replace("votre/vos facture(s)", "votre facture")
+
+                msg["Subject"] = final_subject
                 msg.attach(MIMEText(final_body, "plain"))
 
                 attached = 0

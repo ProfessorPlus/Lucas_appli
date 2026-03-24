@@ -1,7 +1,12 @@
 """
 💳 Create Payment Links - NO SPLIT
 Génère des liens de paiement Stripe SANS transfert (tout va sur le compte principal).
-Utilise secrets_no_prof.yaml (clé Stripe différente, pas de split).
+
+⚠️ Comportement voulu pour les profs hors TutorBird :
+- AUCUN besoin d'ajouter le prof dans l'application / dans le mapping teachers
+- AUCUN split par prof
+- AUCUNE dépendance à un compte Stripe enseignant
+- Les familles/profs venant de Notion hors TutorBird sont acceptés comme les autres
 
 Même logique que create_payment_links.py mais simplifié :
 - Pas de transfer_data
@@ -73,6 +78,36 @@ def build_product_name(lessons):
     return f"Soutien scolaire | {base}"
 
 
+def collect_teacher_names(fam, lessons):
+    """
+    Récupère des noms de profs uniquement à titre informatif.
+    En mode no_split, on NE BLOQUE JAMAIS si le prof n'existe pas dans l'app.
+    """
+    names = []
+
+    # 1) Depuis les leçons
+    for L in lessons:
+        teacher = (L.get("teacher") or "").strip()
+        if teacher:
+            names.append(teacher)
+
+    # 2) Depuis la famille si présent
+    fam_teacher = (fam.get("teacher") or fam.get("teacher_name") or "").strip()
+    if fam_teacher:
+        names.append(fam_teacher)
+
+    # Dédupliquer tout en gardant l'ordre
+    seen = set()
+    deduped = []
+    for name in names:
+        key = normalize(name)
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(name)
+
+    return deduped
+
+
 def run_create_payment_links_no_split(
     data,
     secrets_no_prof,
@@ -87,8 +122,13 @@ def run_create_payment_links_no_split(
     Génère les liens de paiement Stripe SANS aucun split/transfert.
     Tout va sur le compte Stripe défini dans secrets_no_prof.
 
+    Important :
+    - Aucun prof n'a besoin d'être configuré dans le mapping "teachers"
+    - Les profs hors TutorBird / venant de Notion ne bloquent jamais ce flux
+    - Le prof est uniquement conservé comme information dans les métadonnées
+
     Args:
-        data: données familles (full_output_tb_SIMPLE.json)
+        data: données familles (full_output_tb_SIMPLE.json ou fusion avec Notion hors TutorBird)
         secrets_no_prof: config depuis secrets_no_prof.yaml
         familles_euros: liste des familles en EUR
         data_dir: dossier de données
@@ -161,7 +201,7 @@ def run_create_payment_links_no_split(
             progress = int(current / max(total_families, 1) * 80)
 
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
-            parent_email = fam.get("parent_email") or ""
+            parent_email = fam.get("parent_email") or fam.get("email_client") or ""
 
             update(progress, f"🔄 {parent_name} ({current}/{total_families})")
 
@@ -188,6 +228,14 @@ def run_create_payment_links_no_split(
 
             total_cents = int(round(total_amount * 100))
             product_name = build_product_name(billable_lessons)
+            teacher_names = collect_teacher_names(fam, billable_lessons)
+            teacher_label = " / ".join(teacher_names) if teacher_names else "— (compte principal)"
+            source_label = (
+                "notion_hors_tutorbird"
+                if str(fam.get("source") or "").lower() in {"notion", "notion_hors_tutorbird", "hors_tutorbird"}
+                or bool(fam.get("is_hors_tutorbird"))
+                else "standard"
+            )
 
             price = stripe.Price.create(
                 unit_amount=total_cents,
@@ -216,6 +264,8 @@ def run_create_payment_links_no_split(
                     "product_name": product_name,
                     "invoice_date": today,
                     "mode": "no_split",
+                    "teacher_names": teacher_label,
+                    "source_label": source_label,
                 },
                 "payment_intent_data": {
                     "metadata": {
@@ -223,6 +273,8 @@ def run_create_payment_links_no_split(
                         "invoice_date": today,
                         "product_name": product_name,
                         "mode": "no_split",
+                        "teacher_names": teacher_label,
+                        "source_label": source_label,
                     }
                 },
                 "after_completion": {"type": "hosted_confirmation"},
@@ -243,12 +295,15 @@ def run_create_payment_links_no_split(
             output_links.append({
                 "family_id": fam_id,
                 "parent": parent_name,
-                "teacher": "— (tout sur compte principal)",
+                "parent_email": parent_email,
+                "teacher": teacher_label,
+                "source_label": source_label,
                 "currency": currency,
                 "students_label": product_name,
                 "amount": total_amount,
                 "teacher_pay": 0,
                 "payment_link": link.url,
+                "payment_link_id": getattr(link, "id", None),
                 "invoice_date": today,
                 "mode": "no_split",
             })

@@ -206,6 +206,13 @@ def download_from_drive(drive_filename, local_path, drive_folder="data"):
 # GESTION DES FACTURES
 # ===========================
 
+def _count_files_recursive(folder_path):
+    count = 0
+    for _, _, files in os.walk(folder_path):
+        count += len(files)
+    return count
+
+
 def save_invoice_folder(local_folder_path, year_month_name=None):
     """
     Sauvegarde un dossier de factures complet vers Google Drive.

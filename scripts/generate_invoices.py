@@ -34,7 +34,7 @@ except ImportError:
 
 # Import Google Drive direct (fallback upload détaillé)
 try:
-    from scripts.google_drive import get_drive_service, find_or_create_folder, upload_file, ROOT_FOLDER_ID
+    from scripts.google_drive import get_drive_service, find_or_create_folder, upload_file, upload_bytes, ROOT_FOLDER_ID
     DRIVE_HELPERS_AVAILABLE = True
 except ImportError:
     DRIVE_HELPERS_AVAILABLE = False
@@ -50,6 +50,10 @@ TAGLINE_LEFT = "Soutien scolaire\nsur-mesure"
 MONTHS_FR = [
     "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
     "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+]
+MONTHS_EN = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
 ]
 
 STATUTS_NON_FACTURES = ["AbsentNotice"]
@@ -73,10 +77,56 @@ def normalize(s):
 
 
 def clean_str(s):
-    """Nettoie une chaîne pour nom de fichier"""
+    """Nettoie une chaîne pour nom de fichier/dossier en translittérant les accents (Loïse -> Loise)."""
     if not isinstance(s, str):
         return ""
-    return re.sub(r"[^a-zA-Z0-9_\- ]", "", s).strip()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.replace("’", " ").replace("'", " ")
+    s = re.sub(r"[^A-Za-z0-9_\- ]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.replace(" ", "_")
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
+
+
+def _normalize_language(value):
+    value = (value or "").strip().lower()
+    if value.startswith("en") or "anglais" in value or "english" in value:
+        return "en"
+    return "fr"
+
+
+def _invoice_labels(language="fr"):
+    language = _normalize_language(language)
+    if language == "en":
+        return {
+            "tagline": "Tailored tutoring",
+            "title": "INVOICE",
+            "footer": "Invoice",
+            "bill_to": "Bill to:",
+            "date": "Date:",
+            "invoice_no": "Invoice No.:",
+            "date_col": "Date",
+            "description_col": "Description",
+            "fees_col": "Fees",
+            "total_due": "Total due:",
+            "pay_button": "Click here to pay online",
+            "lesson_desc": "Lesson with {teacher} for {student} ({duration} min)",
+        }
+    return {
+        "tagline": "Soutien scolaire\nsur-mesure",
+        "title": "FACTURE",
+        "footer": "Facture",
+        "bill_to": "Facturer à :",
+        "date": "Date :",
+        "invoice_no": "Facture n°:",
+        "date_col": "Date",
+        "description_col": "Description",
+        "fees_col": "Frais",
+        "total_due": "Total dû :",
+        "pay_button": "Cliquez ici pour payer en ligne",
+        "lesson_desc": "Cours avec {teacher} pour {student} ({duration} min)",
+    }
 
 
 def parse_dt(date_str):
@@ -245,22 +295,11 @@ def _next_invoice_number(counter_root, invoice_date):
 
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
-                       parent_name, logo_path, counter_root, today):
-    """
-    Génère un PDF de facture.
-    
-    Args:
-        output_path: chemin du fichier PDF
-        items: liste de {"date": datetime, "description": str, "amount": float}
-        total_due_display: "123.45 CHF"
-        pay_link_url: URL du lien de paiement
-        parent_name: nom du parent
-        logo_path: chemin du logo
-        counter_root: dossier des compteurs de factures
-        today: datetime du jour
-    """
+                       parent_name, logo_path, counter_root, today, language="fr"):
+    """Génère un PDF de facture en français ou en anglais."""
     currency = total_due_display.split()[-1] if " " in total_due_display else "CHF"
-    
+    labels = _invoice_labels(language)
+
     def draw_header(canvas, doc_inner):
         w, h = A4
         x_left = LEFT
@@ -273,7 +312,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(BRAND_BLUE)
         canvas.setFont(FONT_BOLD, 27)
-        title = "FACTURE"
+        title = labels["title"]
         tw = canvas.stringWidth(title, FONT_BOLD, 27)
         canvas.drawString(x_right - tw, y_top - 6 * mm, title)
 
@@ -287,10 +326,11 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, "Soutien scolaire sur-mesure")
+        footer_left = labels["tagline"].replace("\n", " ")
+        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, footer_left)
 
         canvas.setFont(FONT_SANS, 10)
-        txt = "Facture"
+        txt = labels["footer"]
         tw = canvas.stringWidth(txt, FONT_SANS, 10)
         canvas.drawString(w - RIGHT - tw - 5*mm, y + bar_h/2 - 4, txt)
 
@@ -309,7 +349,6 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     flow = []
 
-    # Styles
     st_sub = ParagraphStyle(name="sub", fontName=FONT_BOLD, fontSize=11, leading=13)
     st_facturer = ParagraphStyle(name="facturer", fontName=FONT_SANS, fontSize=12, leading=14)
     st_label = ParagraphStyle(name="label", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT)
@@ -319,9 +358,8 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     date_str = today.strftime("%d.%m.%Y")
     inv_number = _next_invoice_number(counter_root, today)
 
-    # BANDEAU HAUT
-    left_band = Paragraph(TAGLINE_LEFT.replace("\n", "<br/>"), st_sub)
-    middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
+    left_band = Paragraph(labels["tagline"].replace("\n", "<br/>"), st_sub)
+    middle_band = Paragraph(f"<b>{labels['bill_to']}</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
     left_w = 58 * mm
@@ -330,25 +368,21 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     right_band = Table(
         [
-            [Paragraph("Date :", st_label), "", Paragraph(date_str, st_value)],
-            [Paragraph("Facture n°:", st_label), "", Paragraph(inv_number, st_value)],
+            [Paragraph(labels["date"], st_label), "", Paragraph(date_str, st_value)],
+            [Paragraph(labels["invoice_no"], st_label), "", Paragraph(inv_number, st_value)],
         ],
         colWidths=[26*mm, 4*mm, right_w - 30*mm],
     )
 
-    header_row = Table([[left_band, middle_band, right_band]],
-                       colWidths=[left_w, mid_w, right_w])
+    header_row = Table([[left_band, middle_band, right_band]], colWidths=[left_w, mid_w, right_w])
     flow.append(header_row)
     flow.append(Spacer(1, 10 * mm))
 
-    # TABLEAU
-    data_tbl = [
-        [
-            Paragraph("Date", st_header),
-            Paragraph("Description", st_header),
-            Paragraph("Frais", st_header),
-        ]
-    ]
+    data_tbl = [[
+        Paragraph(labels["date_col"], st_header),
+        Paragraph(labels["description_col"], st_header),
+        Paragraph(labels["fees_col"], st_header),
+    ]]
 
     for item in items:
         date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
@@ -357,60 +391,44 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         amount_cell = f"{amt:.2f} {currency}"
         data_tbl.append([date_cell, desc_cell, amount_cell])
 
-    tbl = Table(
-        data_tbl,
-        colWidths=[30*mm, avail - 60*mm, 30*mm],
-        repeatRows=1,
-    )
-
+    tbl = Table(data_tbl, colWidths=[30*mm, avail - 60*mm, 30*mm], repeatRows=1)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-
         ("TOPPADDING", (0, 0), (-1, 0), 14),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 14),
-
         ("VALIGN", (0, 1), (-1, -1), "MIDDLE"),
         ("ALIGN", (0, 1), (0, -1), "CENTER"),
         ("ALIGN", (1, 1), (1, -1), "CENTER"),
         ("ALIGN", (2, 1), (2, -1), "CENTER"),
-
         ("TOPPADDING", (0, 1), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 1), (-1, -1), 8),
-
         ("LINEBELOW", (0, 1), (-1, -1), 0.35, colors.lightgrey),
     ]))
 
     flow.append(tbl)
     flow.append(Spacer(1, 18 * mm))
 
-    # TOTAL + BOUTON
-    total_para = TotalTight(f"Total dû : {total_due_display}", spacing=-1.0)
+    total_para = TotalTight(f"{labels['total_due']} {total_due_display}", spacing=-1.0)
 
     stack = Table(
         [
             [total_para],
-            [PayButton(label="Cliquez ici pour payer en ligne", url=pay_link_url)],
+            [PayButton(label=labels["pay_button"], url=pay_link_url)],
         ],
         colWidths=[55 * mm],
         hAlign="RIGHT",
     )
-
     stack.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (0, 0), "CENTER"),
-        ("ALIGN", (0, 1), (0, 1), "CENTER"),
-        ("TOPPADDING", (0, 0), (0, 0), 6),
+        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 1), (-1, 1), 2),
     ]))
 
     flow.append(stack)
-
-    # BUILD PDF
-    try:
-        doc.build(flow, onFirstPage=on_page, onLaterPages=on_page)
-    except:
-        traceback.print_exc()
+    doc.build(flow, onFirstPage=on_page, onLaterPages=on_page)
 
 
 def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None):
@@ -462,6 +480,10 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         for fam_id, fam in data.items():
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
             norm_parent = normalize(parent_name)
+
+            if str(fam.get("currency", "")).lower() == "eur":
+                families_in_euros.add(fam_id)
+                continue
             
             for eur_name in manual_names:
                 ratio = SequenceMatcher(None, norm_parent, eur_name).ratio()
@@ -540,6 +562,13 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or "Parent"
             update(progress, f"📄 {parent_name} ({current}/{total_families})")
+
+            family_language = _normalize_language(
+                fam.get("language") or fam.get("invoice_language") or
+                (lessons[0].get("notion_language") if lessons else "fr")
+            )
+            labels = _invoice_labels(family_language)
+            file_prefix = "Invoice" if family_language == "en" else "Facture"
             
             currency = "EUR" if fam_id in families_in_euros else "CHF"
             
@@ -573,7 +602,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     student = L.get("student", "")
                     teacher = L.get("teacher", "Professeur")
                     duration = L.get("duration_min", "")
-                    desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                    desc = labels["lesson_desc"].format(teacher=teacher, student=student, duration=duration)
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
                     items.append({"date": d, "description": desc, "amount": amt})
@@ -593,13 +622,13 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     pay_link_url = "https://example.com"
                     liens_manquants.append(f"{parent_name} (no-split)")
                 
-                filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
+                filename = f"{file_prefix}_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
-                    parent_name, logo_path, counter_root, today
+                    parent_name, logo_path, counter_root, today, family_language
                 )
                 factures_generees += 1
                 generated_files.append(output_path)
@@ -682,13 +711,13 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         liens_manquants.append(f"{parent_name} / {teacher_display}")
                     
                     teacher_clean = clean_str(teacher_display.replace(" ", "_"))
-                    filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{teacher_clean}.pdf"
+                    filename = f"{file_prefix}_{year_str}-{today.strftime('%m-%d')}_{teacher_clean}.pdf"
                     output_path = os.path.join(fam_base_dir, filename)
                     
                     # Générer le PDF
                     _build_invoice_pdf(
                         output_path, items, total_due_display, pay_link_url,
-                        parent_name, logo_path, counter_root, today
+                        parent_name, logo_path, counter_root, today, family_language
                     )
                     factures_generees += 1
                     generated_files.append(output_path)

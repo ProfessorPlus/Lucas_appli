@@ -267,6 +267,7 @@ def page_extract(ctx):
                     "Taux client": f"{e['taux_horaire_client']} {e['devise_client']}",
                     "Taux prof": f"{e['taux_horaire_prof']} {e['devise_prof']}",
                     "Total client": f"{e['taux_horaire_client'] * e['heures_faites']:.0f} {e['devise_client']}",
+                    "Langue": "Anglais" if e.get("langue") == "en" else "Français",
                 })
             
             st.dataframe(table_data, hide_index=True, use_container_width=True)
@@ -588,13 +589,18 @@ def page_payment(ctx):
     # ===========================
     # VÉRIFICATION DES PROFS AVANT TOUT
     # ===========================
-    # Récupérer tous les profs de TutorBird
+    # Récupérer uniquement les profs TutorBird (les profs hors TutorBird sont gérés depuis Notion)
     tutorbird_teachers = set()
+    notion_hors_tb_teachers = set()
     for fam_id, fam in data.items():
         for L in fam.get("lessons", []):
             teacher = L.get("teacher", "")
-            if teacher:
-                tutorbird_teachers.add(teacher)
+            if not teacher:
+                continue
+            if L.get("source") == "notion_hors_tb" or fam.get("source") == "notion_hors_tb":
+                notion_hors_tb_teachers.add(teacher)
+                continue
+            tutorbird_teachers.add(teacher)
     
     # Fonction de normalisation pour comparaison
     def normalize_for_compare(s):
@@ -638,7 +644,7 @@ def page_payment(ctx):
     # AFFICHAGE STATUT DES PROFS
     # ===========================
     if missing_teachers:
-        st.error(f"❌ **{len(missing_teachers)} professeur(s) non configuré(s)** - Vous devez les ajouter avant de générer les liens")
+        st.error(f"❌ **{len(missing_teachers)} professeur(s) TutorBird non configuré(s)** - Vous devez les ajouter avant de générer les liens")
         
         for teacher in missing_teachers:
             col1, col2 = st.columns([3, 1])
@@ -654,6 +660,9 @@ def page_payment(ctx):
         st.markdown("---")
     else:
         st.success(f"✅ **{len(matched_teachers)} professeur(s)** - Tous les profs TutorBird sont configurés")
+
+    if notion_hors_tb_teachers:
+        st.info(f"📋 **{len(notion_hors_tb_teachers)} professeur(s) hors TutorBird** sont gérés directement depuis Notion et n'ont pas besoin d'être ajoutés dans l'application.")
     
     # ===========================
     # ONGLETS
@@ -1061,18 +1070,22 @@ def page_invoices(ctx):
 
             if result["success"]:
                 st.success(f"✅ **{result['invoices']}** factures créées")
-                st.info(f"📄 **{len(result.get('generated_files', []))}** PDF(s) généré(s) dans le dossier courant de l'application")
+                st.info(f"📄 **{len(result.get('generated_files', []))}** PDF(s) généré(s) dans le runtime local de l'application")
                 st.info(f"📁 **Dossier utilisé par la génération** : `{result.get('folder', '—')}`")
                 if result.get("manifest_path"):
-                    st.caption(f"Manifest local : {result['manifest_path']}")
+                    st.caption(f"Manifest runtime : {result['manifest_path']}")
 
                 drive_result = result.get("drive_result") or {}
                 uploaded_count = int(result.get("uploaded_count", 0) or 0)
+                local_files_count = int(result.get("local_files_count", 0) or len(result.get("generated_files", [])))
+                st.caption(f"Fichiers présents dans le runtime local : {local_files_count}")
                 if result.get("drive_saved"):
                     st.success(f"☁️ Sauvegarde Google Drive réussie — **{uploaded_count}** fichier(s) uploadé(s)")
                 else:
                     msg = drive_result.get("error") or drive_result.get("warning") or drive_result.get("message") or "Aucun fichier confirmé sur Drive"
                     st.warning(f"☁️ Sauvegarde Google Drive non confirmée — **{uploaded_count}** fichier(s) uploadé(s). {msg}")
+
+                st.info("💡 Depuis Streamlit Cloud, le dossier local affiché est celui du serveur de l'application. Pour retrouver automatiquement les PDF sur votre PC, il faut synchroniser Google Drive sur l'ordinateur ou lancer l'app en local.")
 
                 if drive_result.get("errors"):
                     with st.expander("⚠️ Détails des erreurs Google Drive"):
@@ -1253,6 +1266,7 @@ def page_send(ctx):
 
     subject = st.text_input("📝 Sujet", value=template["subject"])
     body = st.text_area("✉️ Message", value=template["body"], height=250)
+    st.caption("🌍 Les familles marquées avec **Langue = Anglais** dans Notion « Profs hors TutorBird » reçoivent automatiquement l'email en anglais et une facture PDF en anglais. Sans langue précisée, le français est utilisé par défaut.")
 
     st.markdown("---")
     st.markdown("### 📬 Options d'envoi")
