@@ -838,6 +838,8 @@ def page_payment(ctx):
                     progress.progress(p)
                     status.info(m)
                 
+                result = None
+                
                 if no_split_t2:
                     if not secrets_no_prof_t2:
                         st.error("❌ Section stripe_no_split manquante dans secrets.yaml !")
@@ -858,12 +860,12 @@ def page_payment(ctx):
                         skip_if_exists=False,  # Forcer la régénération
                     )
                 
-                if result["success"]:
+                if result and result["success"]:
                     st.session_state.regenerated_families = selected_family_ids
                     st.session_state.show_goto_invoices_tab2 = True
                     st.success(f"✅ **{result['links_count']}** liens régénérés !")
                     st.rerun()
-                else:
+                elif result:
                     st.error(f"❌ Erreur : {result['error']}")
             
             # Bouton vers génération factures
@@ -1024,7 +1026,46 @@ def page_invoices(ctx):
             )
             
             if result["success"]:
-                st.success(f"✅ **{result['invoices']}** factures créées")
+                invoices_count = result.get("invoices", 0)
+                generated_files = result.get("generated_files", [])
+                folder_used = result.get("folder") or "—"
+                drive_saved = result.get("drive_saved", False)
+                drive_result = result.get("drive_result") or {}
+                manifest_path = result.get("manifest_path")
+                
+                st.success(f"✅ **{invoices_count}** factures créées")
+                
+                if generated_files:
+                    st.info(f"📄 **{len(generated_files)}** PDF(s) généré(s) dans le dossier courant de l'application")
+                else:
+                    st.warning("⚠️ Aucun PDF listé dans le résultat. Vérifiez les logs et le dossier indiqué ci-dessous.")
+                
+                st.info(f"📁 **Dossier utilisé par la génération** : `{folder_used}`")
+                
+                if manifest_path:
+                    st.caption(f"Manifest local : {manifest_path}")
+                
+                if drive_saved:
+                    uploaded = drive_result.get("uploaded") if isinstance(drive_result, dict) else None
+                    if uploaded is not None:
+                        st.success(f"☁️ Sauvegarde Google Drive réussie — {uploaded} fichier(s) uploadé(s)")
+                    else:
+                        st.success("☁️ Sauvegarde Google Drive réussie")
+                else:
+                    drive_error = drive_result.get("error") if isinstance(drive_result, dict) else None
+                    if drive_error:
+                        st.warning(f"⚠️ PDFs générés localement dans le runtime, mais sauvegarde Google Drive non confirmée : {drive_error}")
+                    else:
+                        st.warning("⚠️ PDFs générés localement dans le runtime, mais sauvegarde Google Drive non confirmée.")
+                
+                with st.expander("📋 Aperçu des fichiers générés"):
+                    preview = generated_files[:20]
+                    for f in preview:
+                        st.write(f"• {os.path.basename(f)}")
+                    if len(generated_files) > 20:
+                        st.caption(f"… et {len(generated_files) - 20} autre(s) fichier(s)")
+                
+                st.caption("En mode Streamlit Cloud, le dossier local ci-dessus correspond au serveur de l'application, pas à votre PC Windows. Pour les retrouver sur votre ordinateur, synchronisez Google Drive sur votre PC.")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
     

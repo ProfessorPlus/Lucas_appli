@@ -627,19 +627,54 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     generated_files.append(output_path)
                 
         # ===============================
+        # MANIFEST LOCAL
+        # ===============================
+        manifest = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "folder": month_folder_path,
+            "invoices": factures_generees,
+            "links_found": liens_trouves,
+            "links_missing": liens_manquants,
+            "absences": cours_non_factures,
+            "generated_files": generated_files,
+        }
+        manifest_path = os.path.join(month_folder_path, "invoice_generation_manifest.json")
+        try:
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠️ Erreur écriture manifest local: {e}")
+            manifest_path = None
+
+        # Conserver aussi une trace dans data/
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            with open(os.path.join(data_dir, "last_invoice_generation.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠️ Erreur écriture last_invoice_generation.json: {e}")
+
+        # ===============================
         # UPLOAD VERS GOOGLE DRIVE (si cloud)
         # ===============================
         drive_saved = False
+        drive_result = {
+            "success": False,
+            "reason": "storage_manager indisponible" if not STORAGE_AVAILABLE else "aucun fichier à uploader",
+        }
         print(f"🔍 DEBUG: STORAGE_AVAILABLE={STORAGE_AVAILABLE}, factures_generees={factures_generees}")
         if STORAGE_AVAILABLE and factures_generees > 0:
             update(95, "☁️ Upload vers Google Drive...")
             try:
-                result = save_invoice_folder(month_folder_path)
-                if result.get("success"):
+                drive_result = save_invoice_folder(month_folder_path) or {"success": False, "error": "Résultat vide"}
+                if drive_result.get("success"):
                     drive_saved = True
-                    uploaded_count = result.get("uploaded", 0)
+                    uploaded_count = drive_result.get("uploaded", 0)
                     update(98, f"☁️ {uploaded_count} fichiers uploadés sur Drive")
+                else:
+                    print(f"⚠️ Upload Drive non confirmé: {drive_result}")
             except Exception as e:
+                drive_result = {"success": False, "error": str(e)}
                 print(f"⚠️ Erreur upload Drive: {e}")
         
         update(100, "✅ Terminé !")
@@ -652,7 +687,9 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             "absences": cours_non_factures,
             "folder": month_folder_path,
             "generated_files": generated_files,
-            "drive_saved": drive_saved
+            "manifest_path": manifest_path,
+            "drive_saved": drive_saved,
+            "drive_result": drive_result,
         }
         
     except Exception as e:
