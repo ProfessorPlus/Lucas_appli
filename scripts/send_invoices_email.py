@@ -105,33 +105,65 @@ def _match_family_invoices(parent_name, pdf_paths):
     return matched
 
 
-def get_families_from_folder(invoice_folder, data):
-    """Récupère la liste des familles avec leurs factures (recherche récursive)."""
-    families = []
-    if not os.path.exists(invoice_folder):
-        return families
+def collect_invoice_diagnostics(invoice_folder, data):
+    """
+    Analyse le dossier de factures et explique quelles familles sont envoyables.
+
+    Returns:
+        dict avec:
+          - found_pdfs
+          - ready_families
+          - missing_email_families
+          - missing_pdf_families
+    """
+    result = {
+        "found_pdfs": 0,
+        "ready_families": [],
+        "missing_email_families": [],
+        "missing_pdf_families": [],
+    }
+
+    if not invoice_folder or not os.path.exists(invoice_folder):
+        return result
 
     pdf_paths = _collect_pdfs_recursively(invoice_folder)
-    if not pdf_paths:
-        return families
+    result["found_pdfs"] = len(pdf_paths)
 
     for fam_id, fam in data.items():
         parent_name = fam.get("parent_name") or fam.get("family_name") or ""
         parent_email = fam.get("parent_email") or fam.get("email_client") or ""
-        total_amount = fam.get("total_courses", 0)
         invoices = _match_family_invoices(parent_name, pdf_paths)
+        language = fam.get("language", "fr")
 
         if invoices and parent_email:
-            families.append({
+            result["ready_families"].append({
                 "family_id": fam_id,
                 "parent_name": parent_name,
                 "parent_email": parent_email,
                 "invoices": invoices,
-                "total": total_amount,
                 "invoice_count": len(invoices),
-                "language": fam.get("language", "fr"),
+                "language": language,
             })
-    return families
+        elif invoices and not parent_email:
+            result["missing_email_families"].append({
+                "family_id": fam_id,
+                "parent_name": parent_name,
+                "invoice_count": len(invoices),
+                "sample_invoice": os.path.basename(invoices[0]) if invoices else "",
+            })
+        elif parent_email and not invoices:
+            result["missing_pdf_families"].append({
+                "family_id": fam_id,
+                "parent_name": parent_name,
+                "parent_email": parent_email,
+            })
+
+    return result
+
+
+def get_families_from_folder(invoice_folder, data):
+    """Récupère la liste des familles avec leurs factures (recherche récursive)."""
+    return collect_invoice_diagnostics(invoice_folder, data)["ready_families"]
 
 
 def _adapt_subject(subject, invoice_count, language):
@@ -188,14 +220,30 @@ def run_send_invoices(secrets, data, invoice_folder,
         body_en = custom_body_en or template_en["body"]
 
         update(10, "📧 Préparation des emails...")
-        families = get_families_from_folder(invoice_folder, data)
+        diagnostics = collect_invoice_diagnostics(invoice_folder, data)
+        families = diagnostics["ready_families"]
+
         if not families:
-            return {"success": False, "error": "Aucune facture trouvée ou aucune famille avec email"}
+            return {
+                "success": False,
+                "error": "Aucune facture trouvée ou aucune famille avec email",
+                "found_pdfs": diagnostics["found_pdfs"],
+                "matched_families": 0,
+                "missing_email_families": diagnostics["missing_email_families"],
+                "missing_pdf_families": diagnostics["missing_pdf_families"],
+            }
 
         if selected_families:
             families = [f for f in families if f["family_id"] in selected_families]
         if not families:
-            return {"success": False, "error": "Aucune famille sélectionnée avec facture et email"}
+            return {
+                "success": False,
+                "error": "Aucune famille sélectionnée avec facture et email",
+                "found_pdfs": diagnostics["found_pdfs"],
+                "matched_families": 0,
+                "missing_email_families": diagnostics["missing_email_families"],
+                "missing_pdf_families": diagnostics["missing_pdf_families"],
+            }
 
         update(20, f"📊 {len(families)} famille(s) à contacter")
         update(30, "🔌 Connexion au serveur email...")
@@ -209,7 +257,7 @@ def run_send_invoices(secrets, data, invoice_folder,
         total = len(families)
 
         for i, family in enumerate(families):
-            progress = int(30 + (i / max(total,1) * 65))
+            progress = int(30 + (i / max(total, 1) * 65))
             recipient = sender_email if send_to_test else family["parent_email"]
             update(progress, f"📧 Envoi à {family['parent_name']}...")
             try:
@@ -240,7 +288,17 @@ def run_send_invoices(secrets, data, invoice_folder,
 
         server.quit()
         update(100, "✅ Terminé !")
-        return {"success": True, "sent": sent, "total": total, "errors": errors, "test_mode": send_to_test}
+        return {
+            "success": True,
+            "sent": sent,
+            "total": total,
+            "errors": errors,
+            "test_mode": send_to_test,
+            "found_pdfs": diagnostics["found_pdfs"],
+            "matched_families": len(families),
+            "missing_email_families": diagnostics["missing_email_families"],
+            "missing_pdf_families": diagnostics["missing_pdf_families"],
+        }
 
     except smtplib.SMTPAuthenticationError:
         return {"success": False, "error": "Erreur d'authentification Gmail. Vérifiez l'email et le mot de passe d'application."}

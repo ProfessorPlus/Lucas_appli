@@ -16,7 +16,7 @@ from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
 from scripts.generate_invoices import run_generate_invoices
-from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder
+from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics
 from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
@@ -1290,15 +1290,33 @@ def page_send(ctx):
     if not selected_folder:
         st.warning("⚠️ Aucun dossier de factures trouvé")
         return
+
     folder_path = _ensure_local_invoice_folder(selected_folder)
     if not folder_path:
         st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
         return
 
     st.info(f"📁 Dossier : **{selected_folder['month']}**")
-    month_name, year = ctx["get_month_year_from_folder"]({"name": selected_folder["month"], "date": _parse_invoice_folder_dt(selected_folder['month'])})
+    month_name, year = ctx["get_month_year_from_folder"]({
+        "name": selected_folder["month"],
+        "date": _parse_invoice_folder_dt(selected_folder['month'])
+    })
     template_fr = get_default_email_template(month_name, year, language="fr")
     template_en = get_default_email_template(month_name, year, language="en")
+
+    diagnostics = collect_invoice_diagnostics(folder_path, data)
+    st.info(
+        f"📊 PDFs détectés : **{diagnostics['found_pdfs']}**  |  "
+        f"Familles prêtes : **{len(diagnostics['ready_families'])}**"
+    )
+    if diagnostics["missing_email_families"]:
+        with st.expander(f"⚠️ {len(diagnostics['missing_email_families'])} famille(s) avec PDF mais sans email"):
+            for item in diagnostics["missing_email_families"]:
+                st.write(f"• **{item['parent_name']}** — {item.get('invoice_count', 0)} PDF(s)")
+    if diagnostics["missing_pdf_families"]:
+        with st.expander(f"⚠️ {len(diagnostics['missing_pdf_families'])} famille(s) avec email mais sans PDF retrouvé"):
+            for item in diagnostics["missing_pdf_families"]:
+                st.write(f"• **{item['parent_name']}** — {item.get('parent_email','')}")
 
     tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
     with tab_fr:
@@ -1316,8 +1334,8 @@ def page_send(ctx):
     with col2:
         send_test = st.checkbox("📧 Envoyer d'abord à moi-même (test)", value=True)
 
+    families = diagnostics["ready_families"]
     selected_families = None
-    families = get_families_from_folder(folder_path, data)
     if send_all == "Sélection personnalisée":
         family_names = [f["parent_name"] for f in families]
         selected_names = st.multiselect("Sélectionner les familles", family_names)
@@ -1327,9 +1345,11 @@ def page_send(ctx):
         if st.button("📧 Envoyer le test à moi-même", width="stretch"):
             progress = st.progress(0)
             status = st.empty()
+
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
+
             result = run_send_invoices(
                 secrets, data, folder_path,
                 custom_subject=subject, custom_body=body,
@@ -1339,15 +1359,34 @@ def page_send(ctx):
             )
             if result["success"]:
                 st.success(f"✅ Test envoyé à {gmail_config['email']}")
+                st.caption(
+                    f"PDFs détectés : {result.get('found_pdfs', 0)} | "
+                    f"Familles prêtes : {result.get('matched_families', result.get('total', 0))}"
+                )
+                if result.get("missing_email_families"):
+                    st.warning("Familles ignorées car email manquant : " + ", ".join(x["parent_name"] for x in result["missing_email_families"]))
+                if result.get("missing_pdf_families"):
+                    st.warning("Familles ignorées car PDF non retrouvé : " + ", ".join(x["parent_name"] for x in result["missing_pdf_families"]))
             else:
                 st.error(f"❌ Erreur : {result['error']}")
+                if result.get("found_pdfs") is not None:
+                    st.caption(
+                        f"PDFs détectés : {result.get('found_pdfs', 0)} | "
+                        f"Familles prêtes : {result.get('matched_families', 0)}"
+                    )
+                if result.get("missing_email_families"):
+                    st.warning("Familles avec PDF mais sans email : " + ", ".join(x["parent_name"] for x in result["missing_email_families"]))
+                if result.get("missing_pdf_families"):
+                    st.warning("Familles avec email mais sans PDF retrouvé : " + ", ".join(x["parent_name"] for x in result["missing_pdf_families"]))
 
     if st.button("📧 Envoyer les factures aux clients", type="primary", width="stretch"):
         progress = st.progress(0)
         status = st.empty()
+
         def callback(p, m):
             progress.progress(p)
             status.info(m)
+
         result = run_send_invoices(
             secrets, data, folder_path,
             custom_subject=subject, custom_body=body,
@@ -1357,11 +1396,37 @@ def page_send(ctx):
         )
         if result["success"]:
             st.success(f"✅ **{result['sent']}/{result['total']}** emails envoyés")
+            st.caption(
+                f"PDFs détectés : {result.get('found_pdfs', 0)} | "
+                f"Familles prêtes : {result.get('matched_families', result.get('total', 0))}"
+            )
+            if result.get("missing_email_families"):
+                with st.expander("⚠️ Familles ignorées car email manquant"):
+                    for item in result["missing_email_families"]:
+                        st.write(f"• **{item['parent_name']}**")
+            if result.get("missing_pdf_families"):
+                with st.expander("⚠️ Familles ignorées car PDF non retrouvé"):
+                    for item in result["missing_pdf_families"]:
+                        st.write(f"• **{item['parent_name']}** — {item.get('parent_email','')}")
             if result.get("errors"):
-                for err in result["errors"]:
-                    st.warning(f"⚠️ {err}")
+                with st.expander(f"⚠️ {len(result['errors'])} erreur(s) d'envoi"):
+                    for err in result["errors"]:
+                        st.write(f"• {err}")
         else:
             st.error(f"❌ Erreur : {result['error']}")
+            st.caption(
+                f"PDFs détectés : {result.get('found_pdfs', 0)} | "
+                f"Familles prêtes : {result.get('matched_families', 0)}"
+            )
+            if result.get("missing_email_families"):
+                with st.expander("⚠️ Familles avec PDF mais sans email"):
+                    for item in result["missing_email_families"]:
+                        st.write(f"• **{item['parent_name']}**")
+            if result.get("missing_pdf_families"):
+                with st.expander("⚠️ Familles avec email mais sans PDF retrouvé"):
+                    for item in result["missing_pdf_families"]:
+                        st.write(f"• **{item['parent_name']}** — {item.get('parent_email','')}")
+
 
 def page_reminders(ctx):
     st.markdown('<div class="section-title">🔔 Rappels de Paiement</div>', unsafe_allow_html=True)
