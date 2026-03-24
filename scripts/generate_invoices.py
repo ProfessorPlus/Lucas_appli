@@ -454,6 +454,12 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             e.get("mode") == "no_split" for e in (links_list or [])
         )
         
+        print(f"🔍 DEBUG: links_list={'None' if links_list is None else len(links_list)}, links_map={len(links_map)}, is_no_split_mode={is_no_split_mode}")
+        print(f"🔍 DEBUG: data families={len(data)}, STORAGE_AVAILABLE={STORAGE_AVAILABLE}")
+        if links_map:
+            sample_keys = list(links_map.keys())[:3]
+            print(f"🔍 DEBUG: sample link keys: {sample_keys}")
+        
         total_families = len(data)
         current = 0
         
@@ -520,7 +526,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     pay_link_url = "https://example.com"
                     liens_manquants.append(f"{parent_name} (no-split)")
                 
-                filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_tous_profs.pdf"
+                filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF
