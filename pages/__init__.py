@@ -537,13 +537,20 @@ def page_payment(ctx):
     # ===========================
     # VÉRIFICATION DES PROFS AVANT TOUT
     # ===========================
-    # Récupérer tous les profs de TutorBird
+    # Récupérer tous les profs de TutorBird (exclure les profs hors TutorBird / Notion)
     tutorbird_teachers = set()
+    notion_teachers = set()
     for fam_id, fam in data.items():
         for L in fam.get("lessons", []):
             teacher = L.get("teacher", "")
             if teacher:
-                tutorbird_teachers.add(teacher)
+                if L.get("source") == "notion_hors_tb":
+                    notion_teachers.add(teacher)
+                else:
+                    tutorbird_teachers.add(teacher)
+    
+    # Les profs Notion n'ont pas besoin d'être dans secrets.yaml
+    tutorbird_teachers -= notion_teachers
     
     # Fonction de normalisation pour comparaison
     def normalize_for_compare(s):
