@@ -206,50 +206,44 @@ def download_from_drive(drive_filename, local_path, drive_folder="data"):
 # GESTION DES FACTURES
 # ===========================
 
-def _count_files_recursive(folder_path):
-    count = 0
-    for _, _, files in os.walk(folder_path):
-        count += len(files)
-    return count
-
-
 def save_invoice_folder(local_folder_path, year_month_name=None):
     """
     Sauvegarde un dossier de factures complet vers Google Drive.
-
+    
+    Args:
+        local_folder_path: Chemin du dossier local (ex: /tmp/Factures/2026/Février - 01-02-2026)
+        year_month_name: Nom du sous-dossier (optionnel, déduit du chemin sinon)
+    
     Returns:
-        dict: {"success": bool, "uploaded": int, "errors": list, "local_files_count": int}
+        dict: {"success": bool, "uploaded": int, "errors": list}
     """
     if not os.path.exists(local_folder_path):
         return {"success": False, "error": f"Dossier non trouvé: {local_folder_path}"}
-
-    local_files_count = 0
-    for root, _, files in os.walk(local_folder_path):
-        local_files_count += len(files)
-
+    
     if not is_streamlit_cloud() or not DRIVE_AVAILABLE:
-        return {"success": True, "uploaded": 0, "message": "Mode local, pas d'upload Drive", "local_files_count": local_files_count}
-
+        return {"success": True, "uploaded": 0, "message": "Mode local, pas d'upload Drive"}
+    
     try:
+        # Structure: Factures/2026/Février - 01-02-2026/...
         factures_folder_id = _get_folder_id("Factures")
         if not factures_folder_id:
-            return {"success": False, "error": "Dossier Factures non trouvé sur Drive", "local_files_count": local_files_count}
-
-        path_parts = os.path.normpath(local_folder_path).split(os.sep)
-        month_folder_name = year_month_name or path_parts[-1]
+            return {"success": False, "error": "Dossier Factures non trouvé sur Drive"}
+        
+        # Extraire l'année et le nom du mois depuis le chemin
+        path_parts = local_folder_path.rstrip("/").split("/")
+        month_folder_name = path_parts[-1]  # ex: "Février - 01-02-2026"
         year_folder_name = path_parts[-2] if len(path_parts) >= 2 else str(datetime.now().year)
-
+        
+        # Créer/trouver le dossier année
         service = get_drive_service()
         year_folder_id = find_or_create_folder(service, year_folder_name, factures_folder_id)
-
+        
+        # Sync le dossier du mois
         result = sync_folder_to_drive(local_folder_path, month_folder_name, year_folder_id)
-        result["local_files_count"] = local_files_count
-        if result.get("success") and result.get("uploaded", 0) == 0 and local_files_count > 0 and not result.get("errors"):
-            result["warning"] = "Aucun fichier confirmé sur Drive malgré des fichiers locaux présents"
         return result
-
+        
     except Exception as e:
-        return {"success": False, "error": str(e), "local_files_count": local_files_count}
+        return {"success": False, "error": str(e)}
 
 
 def load_invoice_folder(year, month_folder_name, local_base_path=None):
@@ -358,9 +352,13 @@ def list_invoice_folders():
     # Trier par date
     def sort_key(f):
         try:
-            # Extraire la date du nom de dossier "Février - 01-02-2026"
             date_part = f["month"].split(" - ")[-1]
-            return datetime.strptime(date_part, "%d-%m-%Y")
+            for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(date_part, fmt)
+                except:
+                    pass
+            return datetime.min
         except:
             return datetime.min
     

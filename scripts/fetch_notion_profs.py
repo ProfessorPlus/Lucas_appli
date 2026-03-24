@@ -7,13 +7,12 @@ Colonnes Notion attendues :
 - Famille (title)
 - Professeur (rich_text)
 - Élève (rich_text)
-- Devise client (rich_text/select) - "EUR" ou "CHF"
+- Devise client (rich_text) - "EUR" ou "CHF"
 - Taux horaire client (number)
 - Taux horaire prof (number)
-- Devise prof (rich_text/select)
+- Devise prof (rich_text)
 - Heures faites (number)
 - email client (email)
-- Langue (rich_text/select) - optionnel, "Anglais" => anglais, sinon français
 """
 
 import time as _time
@@ -62,40 +61,17 @@ def _notion_query(token, database_id):
 
 
 def _get_text(prop, prop_type="rich_text"):
-    """Extrait le texte d'une propriété Notion, y compris select/status si besoin."""
-    if not isinstance(prop, dict):
-        return ""
-
-    detected_type = prop.get("type") or prop_type
-
-    if detected_type == "title":
+    """Extrait le texte d'une propriété Notion."""
+    if prop_type == "title":
         items = prop.get("title", [])
-        return items[0].get("plain_text", "").strip() if items else ""
-
-    if detected_type == "rich_text":
+    elif prop_type == "rich_text":
         items = prop.get("rich_text", [])
-        return items[0].get("plain_text", "").strip() if items else ""
-
-    if detected_type == "select":
-        select = prop.get("select") or {}
-        return (select.get("name") or "").strip()
-
-    if detected_type == "status":
-        status = prop.get("status") or {}
-        return (status.get("name") or "").strip()
-
-    if detected_type == "multi_select":
-        values = prop.get("multi_select") or []
-        return ", ".join(v.get("name", "").strip() for v in values if v.get("name"))
-
+    else:
+        return ""
+    
+    if items:
+        return items[0].get("plain_text", "").strip()
     return ""
-
-
-def _normalize_language(value):
-    value = (value or "").strip().lower()
-    if value.startswith("en") or "anglais" in value or "english" in value:
-        return "en"
-    return "fr"
 
 
 def _get_number(prop):
@@ -161,7 +137,8 @@ def fetch_notion_profs(secrets):
             devise_prof = _get_text(p.get("Devise prof", {}), "rich_text") or "EUR"
             heures_faites = _get_number(p.get("Heures faites", {}))
             email_client = _get_email(p.get("email client", {}))
-            langue = _normalize_language(_get_text(p.get("Langue", {}), p.get("Langue", {}).get("type", "rich_text")))
+            langue = _get_text(p.get("Langue", {}), "rich_text") or _get_text(p.get("Langue", {}), "select") or ""
+            language = "en" if str(langue).strip().lower() in {"anglais", "english", "en"} else "fr"
             
             if not famille and not professeur:
                 continue
@@ -177,7 +154,7 @@ def fetch_notion_profs(secrets):
                 "devise_prof": devise_prof.upper(),
                 "heures_faites": heures_faites,
                 "email_client": email_client,
-                "langue": langue,
+                "language": language,
             })
         
         return {"success": True, "entries": entries, "error": None}
@@ -241,14 +218,12 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                     "notion_devise_prof": entry["devise_prof"],
                     "notion_devise_client": entry["devise_client"],
                     "notion_taux_client": taux_client,
-                    "notion_language": entry.get("langue", "fr"),
                 }
             ],
             "total_courses": montant_total,
             "source": "notion_hors_tb",
             "currency": entry["devise_client"].lower(),
-            "language": entry.get("langue", "fr"),
-            "invoice_language": entry.get("langue", "fr"),
+            "language": entry.get("language", "fr"),
         }
     
     return families

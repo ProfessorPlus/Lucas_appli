@@ -27,17 +27,10 @@ except ImportError:
 
 # Import du storage manager pour compatibilité cloud
 try:
-    from scripts.storage_manager import save_invoice_folder, load_json, save_json
+    from scripts.storage_manager import save_invoice_folder, load_json
     STORAGE_AVAILABLE = True
 except ImportError:
     STORAGE_AVAILABLE = False
-
-# Import Google Drive direct (fallback upload détaillé)
-try:
-    from scripts.google_drive import get_drive_service, find_or_create_folder, upload_file, upload_bytes, ROOT_FOLDER_ID
-    DRIVE_HELPERS_AVAILABLE = True
-except ImportError:
-    DRIVE_HELPERS_AVAILABLE = False
 
 # ---------- CONSTANTES PDF ----------
 BRAND_BLUE = colors.Color(0.121, 0.227, 0.404)
@@ -50,10 +43,6 @@ TAGLINE_LEFT = "Soutien scolaire\nsur-mesure"
 MONTHS_FR = [
     "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
     "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
-]
-MONTHS_EN = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
 ]
 
 STATUTS_NON_FACTURES = ["AbsentNotice"]
@@ -77,56 +66,12 @@ def normalize(s):
 
 
 def clean_str(s):
-    """Nettoie une chaîne pour nom de fichier/dossier en translittérant les accents (Loïse -> Loise)."""
+    """Nettoie une chaîne pour nom de fichier en conservant les lettres accentuées translittérées."""
     if not isinstance(s, str):
         return ""
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = s.replace("’", " ").replace("'", " ")
-    s = re.sub(r"[^A-Za-z0-9_\- ]+", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    s = s.replace(" ", "_")
-    s = re.sub(r"_+", "_", s)
-    return s.strip("_")
-
-
-def _normalize_language(value):
-    value = (value or "").strip().lower()
-    if value.startswith("en") or "anglais" in value or "english" in value:
-        return "en"
-    return "fr"
-
-
-def _invoice_labels(language="fr"):
-    language = _normalize_language(language)
-    if language == "en":
-        return {
-            "tagline": "Tailored tutoring",
-            "title": "INVOICE",
-            "footer": "Invoice",
-            "bill_to": "Bill to:",
-            "date": "Date:",
-            "invoice_no": "Invoice No.:",
-            "date_col": "Date",
-            "description_col": "Description",
-            "fees_col": "Fees",
-            "total_due": "Total due:",
-            "pay_button": "Click here to pay online",
-            "lesson_desc": "Lesson with {teacher} for {student} ({duration} min)",
-        }
-    return {
-        "tagline": "Soutien scolaire\nsur-mesure",
-        "title": "FACTURE",
-        "footer": "Facture",
-        "bill_to": "Facturer à :",
-        "date": "Date :",
-        "invoice_no": "Facture n°:",
-        "date_col": "Date",
-        "description_col": "Description",
-        "fees_col": "Frais",
-        "total_due": "Total dû :",
-        "pay_button": "Cliquez ici pour payer en ligne",
-        "lesson_desc": "Cours avec {teacher} pour {student} ({duration} min)",
-    }
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-zA-Z0-9_\- ]", "", s).strip()
 
 
 def parse_dt(date_str):
@@ -135,66 +80,6 @@ def parse_dt(date_str):
         return datetime.strptime(date_str, "%d.%m.%Y")
     except:
         return datetime.min
-
-
-def _write_generation_manifest(month_folder_path, generated_files, metadata):
-    manifest_path = os.path.join(month_folder_path, "invoice_generation_manifest.json")
-    payload = {
-        "generated_at": datetime.now().isoformat(),
-        "folder": month_folder_path,
-        "generated_files": [os.path.relpath(p, month_folder_path) for p in generated_files if os.path.exists(p)],
-        **metadata,
-    }
-    try:
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-    except Exception:
-        traceback.print_exc()
-    return manifest_path
-
-
-def _direct_upload_generated_files_to_drive(month_folder_path, generated_files, manifest_path=None):
-    """Fallback Drive: upload direct des PDFs générés en recréant l'arborescence."""
-    if not DRIVE_HELPERS_AVAILABLE:
-        return {"success": False, "error": "Google Drive helper indisponible", "uploaded": 0, "errors": []}
-
-    service = get_drive_service()
-    if not service:
-        return {"success": False, "error": "Google Drive non configuré", "uploaded": 0, "errors": []}
-
-    files_to_upload = [p for p in generated_files if os.path.exists(p)]
-    if manifest_path and os.path.exists(manifest_path):
-        files_to_upload.append(manifest_path)
-    if not files_to_upload:
-        return {"success": False, "error": "Aucun fichier à uploader", "uploaded": 0, "errors": []}
-
-    try:
-        path_parts = os.path.normpath(month_folder_path).split(os.sep)
-        month_folder_name = path_parts[-1]
-        year_folder_name = path_parts[-2] if len(path_parts) >= 2 else str(datetime.now().year)
-
-        factures_id = find_or_create_folder(service, "Factures", ROOT_FOLDER_ID)
-        year_id = find_or_create_folder(service, year_folder_name, factures_id)
-        month_id = find_or_create_folder(service, month_folder_name, year_id)
-
-        uploaded = 0
-        errors = []
-        for file_path in files_to_upload:
-            rel_path = os.path.relpath(file_path, month_folder_path)
-            parent_id = month_id
-            rel_dir = os.path.dirname(rel_path)
-            if rel_dir and rel_dir != ".":
-                for part in rel_dir.split(os.sep):
-                    parent_id = find_or_create_folder(service, part, parent_id)
-            result = upload_file(file_path, os.path.basename(file_path), parent_id)
-            if result.get("success"):
-                uploaded += 1
-            else:
-                errors.append(f"{os.path.basename(file_path)}: {result.get('error', 'erreur inconnue')}")
-
-        return {"success": uploaded > 0, "uploaded": uploaded, "errors": errors, "folder_id": month_id}
-    except Exception as e:
-        return {"success": False, "error": str(e), "uploaded": 0, "errors": []}
 
 
 # ---------- TOTAL COMPACT (comme l'original) ----------
@@ -295,11 +180,22 @@ def _next_invoice_number(counter_root, invoice_date):
 
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
-                       parent_name, logo_path, counter_root, today, language="fr"):
-    """Génère un PDF de facture en français ou en anglais."""
+                       parent_name, logo_path, counter_root, today):
+    """
+    Génère un PDF de facture.
+    
+    Args:
+        output_path: chemin du fichier PDF
+        items: liste de {"date": datetime, "description": str, "amount": float}
+        total_due_display: "123.45 CHF"
+        pay_link_url: URL du lien de paiement
+        parent_name: nom du parent
+        logo_path: chemin du logo
+        counter_root: dossier des compteurs de factures
+        today: datetime du jour
+    """
     currency = total_due_display.split()[-1] if " " in total_due_display else "CHF"
-    labels = _invoice_labels(language)
-
+    
     def draw_header(canvas, doc_inner):
         w, h = A4
         x_left = LEFT
@@ -312,7 +208,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(BRAND_BLUE)
         canvas.setFont(FONT_BOLD, 27)
-        title = labels["title"]
+        title = "FACTURE"
         tw = canvas.stringWidth(title, FONT_BOLD, 27)
         canvas.drawString(x_right - tw, y_top - 6 * mm, title)
 
@@ -326,11 +222,10 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        footer_left = labels["tagline"].replace("\n", " ")
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, footer_left)
+        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, "Soutien scolaire sur-mesure")
 
         canvas.setFont(FONT_SANS, 10)
-        txt = labels["footer"]
+        txt = "Facture"
         tw = canvas.stringWidth(txt, FONT_SANS, 10)
         canvas.drawString(w - RIGHT - tw - 5*mm, y + bar_h/2 - 4, txt)
 
@@ -349,6 +244,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     flow = []
 
+    # Styles
     st_sub = ParagraphStyle(name="sub", fontName=FONT_BOLD, fontSize=11, leading=13)
     st_facturer = ParagraphStyle(name="facturer", fontName=FONT_SANS, fontSize=12, leading=14)
     st_label = ParagraphStyle(name="label", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT)
@@ -358,8 +254,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     date_str = today.strftime("%d.%m.%Y")
     inv_number = _next_invoice_number(counter_root, today)
 
-    left_band = Paragraph(labels["tagline"].replace("\n", "<br/>"), st_sub)
-    middle_band = Paragraph(f"<b>{labels['bill_to']}</b><br/>{parent_name}", st_facturer)
+    # BANDEAU HAUT
+    left_band = Paragraph(TAGLINE_LEFT.replace("\n", "<br/>"), st_sub)
+    middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
     left_w = 58 * mm
@@ -368,21 +265,25 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     right_band = Table(
         [
-            [Paragraph(labels["date"], st_label), "", Paragraph(date_str, st_value)],
-            [Paragraph(labels["invoice_no"], st_label), "", Paragraph(inv_number, st_value)],
+            [Paragraph("Date :", st_label), "", Paragraph(date_str, st_value)],
+            [Paragraph("Facture n°:", st_label), "", Paragraph(inv_number, st_value)],
         ],
         colWidths=[26*mm, 4*mm, right_w - 30*mm],
     )
 
-    header_row = Table([[left_band, middle_band, right_band]], colWidths=[left_w, mid_w, right_w])
+    header_row = Table([[left_band, middle_band, right_band]],
+                       colWidths=[left_w, mid_w, right_w])
     flow.append(header_row)
     flow.append(Spacer(1, 10 * mm))
 
-    data_tbl = [[
-        Paragraph(labels["date_col"], st_header),
-        Paragraph(labels["description_col"], st_header),
-        Paragraph(labels["fees_col"], st_header),
-    ]]
+    # TABLEAU
+    data_tbl = [
+        [
+            Paragraph("Date", st_header),
+            Paragraph("Description", st_header),
+            Paragraph("Frais", st_header),
+        ]
+    ]
 
     for item in items:
         date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
@@ -391,47 +292,63 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         amount_cell = f"{amt:.2f} {currency}"
         data_tbl.append([date_cell, desc_cell, amount_cell])
 
-    tbl = Table(data_tbl, colWidths=[30*mm, avail - 60*mm, 30*mm], repeatRows=1)
+    tbl = Table(
+        data_tbl,
+        colWidths=[30*mm, avail - 60*mm, 30*mm],
+        repeatRows=1,
+    )
+
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
+
         ("TOPPADDING", (0, 0), (-1, 0), 14),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 14),
+
         ("VALIGN", (0, 1), (-1, -1), "MIDDLE"),
         ("ALIGN", (0, 1), (0, -1), "CENTER"),
         ("ALIGN", (1, 1), (1, -1), "CENTER"),
         ("ALIGN", (2, 1), (2, -1), "CENTER"),
+
         ("TOPPADDING", (0, 1), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 1), (-1, -1), 8),
+
         ("LINEBELOW", (0, 1), (-1, -1), 0.35, colors.lightgrey),
     ]))
 
     flow.append(tbl)
     flow.append(Spacer(1, 18 * mm))
 
-    total_para = TotalTight(f"{labels['total_due']} {total_due_display}", spacing=-1.0)
+    # TOTAL + BOUTON
+    total_para = TotalTight(f"Total dû : {total_due_display}", spacing=-1.0)
 
     stack = Table(
         [
             [total_para],
-            [PayButton(label=labels["pay_button"], url=pay_link_url)],
+            [PayButton(label="Cliquez ici pour payer en ligne", url=pay_link_url)],
         ],
         colWidths=[55 * mm],
         hAlign="RIGHT",
     )
+
     stack.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-        ("TOPPADDING", (0, 1), (-1, 1), 2),
+        ("ALIGN", (0, 0), (0, 0), "CENTER"),
+        ("ALIGN", (0, 1), (0, 1), "CENTER"),
+        ("TOPPADDING", (0, 0), (0, 0), 6),
     ]))
 
     flow.append(stack)
-    doc.build(flow, onFirstPage=on_page, onLaterPages=on_page)
+
+    # BUILD PDF
+    try:
+        doc.build(flow, onFirstPage=on_page, onLaterPages=on_page)
+    except:
+        traceback.print_exc()
 
 
-def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None):
+def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None, force_new_folder=False):
     """
     Génère les factures PDF.
     
@@ -480,10 +397,6 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         for fam_id, fam in data.items():
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
             norm_parent = normalize(parent_name)
-
-            if str(fam.get("currency", "")).lower() == "eur":
-                families_in_euros.add(fam_id)
-                continue
             
             for eur_name in manual_names:
                 ratio = SequenceMatcher(None, norm_parent, eur_name).ratio()
@@ -527,9 +440,14 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             month_folder_path = target_folder_path
             update(5, f"📁 Régénération dans : {os.path.basename(target_folder_path)}")
         else:
-            month_folder_name = f"{month_str} {year_str} - {today.strftime('%d-%m-%Y')}"
+            base_month_folder_name = f"{month_str} {year_str} - {today.strftime('%d-%m-%Y')}"
+            month_folder_name = base_month_folder_name
             month_folder_path = os.path.join(invoice_root, year_str, month_folder_name)
+            if force_new_folder or os.path.exists(month_folder_path):
+                month_folder_name = f"{base_month_folder_name} {today.strftime('%Hh%M')}"
+                month_folder_path = os.path.join(invoice_root, year_str, month_folder_name)
             os.makedirs(month_folder_path, exist_ok=True)
+            update(5, f"📁 Génération dans : {month_folder_name}")
         
         # Stats
         factures_generees = 0
@@ -562,13 +480,6 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or "Parent"
             update(progress, f"📄 {parent_name} ({current}/{total_families})")
-
-            family_language = _normalize_language(
-                fam.get("language") or fam.get("invoice_language") or
-                (lessons[0].get("notion_language") if lessons else "fr")
-            )
-            labels = _invoice_labels(family_language)
-            file_prefix = "Invoice" if family_language == "en" else "Facture"
             
             currency = "EUR" if fam_id in families_in_euros else "CHF"
             
@@ -602,7 +513,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     student = L.get("student", "")
                     teacher = L.get("teacher", "Professeur")
                     duration = L.get("duration_min", "")
-                    desc = labels["lesson_desc"].format(teacher=teacher, student=student, duration=duration)
+                    desc = f"Cours avec {teacher} pour {student} ({duration} min)"
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
                     items.append({"date": d, "description": desc, "amount": amt})
@@ -622,13 +533,13 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     pay_link_url = "https://example.com"
                     liens_manquants.append(f"{parent_name} (no-split)")
                 
-                filename = f"{file_prefix}_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
+                filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
-                    parent_name, logo_path, counter_root, today, family_language
+                    parent_name, logo_path, counter_root, today
                 )
                 factures_generees += 1
                 generated_files.append(output_path)
@@ -711,76 +622,35 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         liens_manquants.append(f"{parent_name} / {teacher_display}")
                     
                     teacher_clean = clean_str(teacher_display.replace(" ", "_"))
-                    filename = f"{file_prefix}_{year_str}-{today.strftime('%m-%d')}_{teacher_clean}.pdf"
+                    filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{teacher_clean}.pdf"
                     output_path = os.path.join(fam_base_dir, filename)
                     
                     # Générer le PDF
                     _build_invoice_pdf(
                         output_path, items, total_due_display, pay_link_url,
-                        parent_name, logo_path, counter_root, today, family_language
+                        parent_name, logo_path, counter_root, today
                     )
                     factures_generees += 1
                     generated_files.append(output_path)
                 
-        manifest_path = _write_generation_manifest(
-            month_folder_path,
-            generated_files,
-            {
-                "invoices": factures_generees,
-                "links_found": liens_trouves,
-                "links_missing": liens_manquants,
-                "absences": cours_non_factures,
-            },
-        )
-
+        # ===============================
+        # UPLOAD VERS GOOGLE DRIVE (si cloud)
+        # ===============================
         drive_saved = False
-        uploaded_count = 0
-        drive_result = {"success": False, "uploaded": 0, "errors": []}
-
         print(f"🔍 DEBUG: STORAGE_AVAILABLE={STORAGE_AVAILABLE}, factures_generees={factures_generees}")
-        if factures_generees > 0:
+        if STORAGE_AVAILABLE and factures_generees > 0:
             update(95, "☁️ Upload vers Google Drive...")
-            if STORAGE_AVAILABLE:
-                try:
-                    drive_result = save_invoice_folder(month_folder_path)
-                except Exception as e:
-                    drive_result = {"success": False, "uploaded": 0, "errors": [], "error": str(e)}
-                    print(f"⚠️ Erreur upload Drive: {e}")
-
-            uploaded_count = int(drive_result.get("uploaded", 0) or 0)
-
-            # Fallback si le sync générique n'a rien envoyé
-            if uploaded_count == 0 and generated_files:
-                fallback_result = _direct_upload_generated_files_to_drive(month_folder_path, generated_files, manifest_path=manifest_path)
-                fallback_uploaded = int(fallback_result.get("uploaded", 0) or 0)
-                if fallback_uploaded > uploaded_count:
-                    drive_result = fallback_result
-                    uploaded_count = fallback_uploaded
-
-            drive_saved = uploaded_count > 0
-            if drive_saved:
-                update(98, f"☁️ {uploaded_count} fichiers uploadés sur Drive")
-            else:
-                update(98, "☁️ Aucun fichier confirmé sur Drive")
-
-        # Trace data/ pour inspection rapide
-        if STORAGE_AVAILABLE:
             try:
-                save_json("last_invoice_generation.json", {
-                    "generated_at": datetime.now().isoformat(),
-                    "folder": month_folder_path,
-                    "invoices": factures_generees,
-                    "generated_files": generated_files,
-                    "manifest_path": manifest_path,
-                    "drive_saved": drive_saved,
-                    "uploaded_count": uploaded_count,
-                    "drive_result": drive_result,
-                }, folder="data")
-            except Exception:
-                traceback.print_exc()
-
+                result = save_invoice_folder(month_folder_path)
+                if result.get("success"):
+                    drive_saved = True
+                    uploaded_count = result.get("uploaded", 0)
+                    update(98, f"☁️ {uploaded_count} fichiers uploadés sur Drive")
+            except Exception as e:
+                print(f"⚠️ Erreur upload Drive: {e}")
+        
         update(100, "✅ Terminé !")
-
+        
         return {
             "success": True,
             "invoices": factures_generees,
@@ -789,10 +659,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             "absences": cours_non_factures,
             "folder": month_folder_path,
             "generated_files": generated_files,
-            "manifest_path": manifest_path,
-            "drive_saved": drive_saved,
-            "uploaded_count": uploaded_count,
-            "drive_result": drive_result,
+            "drive_saved": drive_saved
         }
         
     except Exception as e:

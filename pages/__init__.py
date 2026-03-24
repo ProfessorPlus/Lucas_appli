@@ -24,58 +24,8 @@ from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_sing
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
 from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
+from scripts.storage_manager import list_invoice_folders, load_invoice_folder
 
-try:
-    from scripts.storage_manager import list_invoice_folders, load_invoice_folder
-    STORAGE_MANAGER_AVAILABLE = True
-except ImportError:
-    STORAGE_MANAGER_AVAILABLE = False
-
-
-
-
-def _parse_invoice_folder_date(name):
-    try:
-        return datetime.strptime(name.split(" - ")[-1], "%d-%m-%Y")
-    except Exception:
-        return datetime.min
-
-
-def _get_latest_invoice_folder_resolved(ctx):
-    latest = ctx["get_latest_invoice_folder"]()
-    if latest and latest.get("path") and os.path.exists(latest["path"]):
-        latest["source"] = latest.get("source", "local")
-        return latest
-
-    if not STORAGE_MANAGER_AVAILABLE:
-        return latest
-
-    try:
-        folders = list_invoice_folders()
-    except Exception:
-        return latest
-
-    if not folders:
-        return latest
-
-    first = folders[0]
-    path = first.get("path")
-    source = first.get("source", "local")
-    if (not path or not os.path.exists(path)) and source == "drive":
-        try:
-            dl = load_invoice_folder(first["year"], first["month"])
-            if dl.get("success"):
-                path = dl.get("local_path")
-        except Exception:
-            pass
-
-    return {
-        "path": path,
-        "name": first.get("month"),
-        "date": _parse_invoice_folder_date(first.get("month", "")),
-        "source": source,
-        "year": first.get("year"),
-    }
 
 def page_accueil(ctx):
     st.markdown("""
@@ -267,7 +217,6 @@ def page_extract(ctx):
                     "Taux client": f"{e['taux_horaire_client']} {e['devise_client']}",
                     "Taux prof": f"{e['taux_horaire_prof']} {e['devise_prof']}",
                     "Total client": f"{e['taux_horaire_client'] * e['heures_faites']:.0f} {e['devise_client']}",
-                    "Langue": "Anglais" if e.get("langue") == "en" else "Français",
                 })
             
             st.dataframe(table_data, hide_index=True, use_container_width=True)
@@ -589,18 +538,13 @@ def page_payment(ctx):
     # ===========================
     # VÉRIFICATION DES PROFS AVANT TOUT
     # ===========================
-    # Récupérer uniquement les profs TutorBird (les profs hors TutorBird sont gérés depuis Notion)
+    # Récupérer tous les profs de TutorBird
     tutorbird_teachers = set()
-    notion_hors_tb_teachers = set()
     for fam_id, fam in data.items():
         for L in fam.get("lessons", []):
             teacher = L.get("teacher", "")
-            if not teacher:
-                continue
-            if L.get("source") == "notion_hors_tb" or fam.get("source") == "notion_hors_tb":
-                notion_hors_tb_teachers.add(teacher)
-                continue
-            tutorbird_teachers.add(teacher)
+            if teacher:
+                tutorbird_teachers.add(teacher)
     
     # Fonction de normalisation pour comparaison
     def normalize_for_compare(s):
@@ -644,7 +588,7 @@ def page_payment(ctx):
     # AFFICHAGE STATUT DES PROFS
     # ===========================
     if missing_teachers:
-        st.error(f"❌ **{len(missing_teachers)} professeur(s) TutorBird non configuré(s)** - Vous devez les ajouter avant de générer les liens")
+        st.error(f"❌ **{len(missing_teachers)} professeur(s) non configuré(s)** - Vous devez les ajouter avant de générer les liens")
         
         for teacher in missing_teachers:
             col1, col2 = st.columns([3, 1])
@@ -660,9 +604,6 @@ def page_payment(ctx):
         st.markdown("---")
     else:
         st.success(f"✅ **{len(matched_teachers)} professeur(s)** - Tous les profs TutorBird sont configurés")
-
-    if notion_hors_tb_teachers:
-        st.info(f"📋 **{len(notion_hors_tb_teachers)} professeur(s) hors TutorBird** sont gérés directement depuis Notion et n'ont pas besoin d'être ajoutés dans l'application.")
     
     # ===========================
     # ONGLETS
@@ -778,7 +719,7 @@ def page_payment(ctx):
                         st.session_state.regenerated_families = target_family_ids
                         st.session_state.show_goto_invoices = True
                         st.session_state.show_payment_report = True
-                        st.success("✅ Relance terminée !")
+                        st.session_state.payment_links_notice = "✅ Relance terminée !"
                         st.rerun()
                     else:
                         st.error(f"❌ Erreur : {result['error']}")
@@ -808,7 +749,8 @@ def page_payment(ctx):
                     )
                     
                     if result["success"]:
-                        st.success(f"✅ **{result['links_count']}** liens créés (mode sans transfert)")
+                        st.session_state.payment_links_notice = f"✅ **{result['links_count']}** liens créés (mode sans transfert)"
+                        st.success(st.session_state.payment_links_notice)
                     else:
                         st.error(f"❌ Erreur : {result['error']}")
             else:
@@ -822,6 +764,8 @@ def page_payment(ctx):
             if result and result["success"]:
                 st.session_state.show_payment_report = True
                 st.session_state.no_split_mode_active = no_split_mode  # Mémoriser le mode
+                if not no_split_mode:
+                    st.session_state.payment_links_notice = f"✅ **{result['links_count']}** liens générés avec succès"
                 st.rerun()
             elif result:
                 st.error(f"❌ Erreur : {result['error']}")
@@ -914,7 +858,7 @@ def page_payment(ctx):
                 if result["success"]:
                     st.session_state.regenerated_families = selected_family_ids
                     st.session_state.show_goto_invoices_tab2 = True
-                    st.success(f"✅ **{result['links_count']}** liens régénérés !")
+                    st.session_state.payment_links_notice = f"✅ **{result['links_count']}** liens régénérés !"
                     st.rerun()
                 else:
                     st.error(f"❌ Erreur : {result['error']}")
@@ -1023,6 +967,63 @@ def _render_payment_options(ctx, secrets, prefix):
     return use_on_behalf, selected_teachers, payment_method_types, False, None
 
 
+
+def _parse_invoice_folder_dt(folder_name):
+    date_part = folder_name.split(" - ")[-1]
+    for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(date_part, fmt)
+        except Exception:
+            pass
+    return datetime.min
+
+
+def _invoice_folder_choices():
+    folders = list_invoice_folders()
+    choices = []
+    for f in folders:
+        label = f"{f['month']} · {('Drive' if f.get('source') == 'drive' else 'Local')}"
+        choices.append((label, f))
+    return choices
+
+
+def _ensure_local_invoice_folder(folder):
+    if not folder:
+        return None
+    if folder.get("path") and os.path.exists(folder["path"]):
+        return folder["path"]
+    if folder.get("source") == "drive":
+        result = load_invoice_folder(folder.get("year"), folder.get("month"))
+        if result.get("success"):
+            return result.get("local_path")
+    return folder.get("path")
+
+
+def _render_invoice_folder_selector(mode_key, selection_key, default_to_latest=True):
+    choices = _invoice_folder_choices()
+    mode = st.radio(
+        "📁 Dossier de travail",
+        ["Créer un nouveau dossier", "Utiliser un dossier existant"],
+        horizontal=True,
+        key=mode_key,
+        index=1 if (choices and not default_to_latest) else 0,
+    )
+    selected_folder = None
+    if mode == "Utiliser un dossier existant":
+        if not choices:
+            st.warning("⚠️ Aucun dossier existant trouvé. Un nouveau dossier sera créé.")
+            mode = "Créer un nouveau dossier"
+        else:
+            labels = [c[0] for c in choices]
+            default_index = 0
+            selected_label = st.selectbox("Choisir un dossier", labels, index=default_index, key=selection_key)
+            selected_folder = dict(choices[labels.index(selected_label)][1])
+            st.info(f"📂 Dossier sélectionné : **{selected_folder['month']}** ({selected_folder.get('source', 'local')})")
+    else:
+        st.info("📁 Un nouveau dossier sera créé. Si un dossier existe déjà aujourd'hui, l'heure sera ajoutée automatiquement au nom du dossier.")
+    return mode, selected_folder
+
+
 def page_invoices(ctx):
     st.markdown('<div class="section-title">📄 Générer les Factures</div>', unsafe_allow_html=True)
 
@@ -1032,20 +1033,21 @@ def page_invoices(ctx):
 
     data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-    latest = _get_latest_invoice_folder_resolved(ctx)
 
     if not data:
         st.error("❌ Aucune donnée extraite")
         return
 
+    default_tab = 1 if st.session_state.get("invoices_tab") == "regen" else 0
     tab1, tab2 = st.tabs(["📄 Générer toutes les factures", "🔄 Régénérer et remplacer certaines factures"])
 
     with tab1:
         st.info(f"📊 **{len(data)}** familles à facturer")
-
         links_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
         if not os.path.exists(links_path):
             st.warning("⚠️ Les liens de paiement n'ont pas été générés.")
+
+        mode, selected_folder = _render_invoice_folder_selector("invoice_folder_mode_all", "invoice_folder_select_all")
 
         candidates = [
             os.path.join(ctx["BASE_DIR"], "Professor_logo_dernier.png"),
@@ -1064,65 +1066,61 @@ def page_invoices(ctx):
                 progress.progress(p)
                 status.info(m)
 
+            target_folder_path = None
+            force_new_folder = mode == "Créer un nouveau dossier"
+            if mode == "Utiliser un dossier existant" and selected_folder:
+                target_folder_path = _ensure_local_invoice_folder(selected_folder)
+                if not target_folder_path:
+                    st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
+                    return
+
             result = run_generate_invoices(
-                data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback
+                data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
+                target_folder_path=target_folder_path,
+                force_new_folder=force_new_folder,
             )
 
             if result["success"]:
+                folder_used = result.get("folder")
+                generated_files = result.get("generated_files", [])
+                st.session_state.invoice_work_folder = {
+                    "path": folder_used,
+                    "name": os.path.basename(folder_used) if folder_used else "",
+                    "year": os.path.basename(os.path.dirname(folder_used)) if folder_used else "",
+                    "month": os.path.basename(folder_used) if folder_used else "",
+                    "source": "local",
+                }
                 st.success(f"✅ **{result['invoices']}** factures créées")
-                st.info(f"📄 **{len(result.get('generated_files', []))}** PDF(s) généré(s) dans le runtime local de l'application")
-                st.info(f"📁 **Dossier utilisé par la génération** : `{result.get('folder', '—')}`")
-                if result.get("manifest_path"):
-                    st.caption(f"Manifest runtime : {result['manifest_path']}")
-
-                drive_result = result.get("drive_result") or {}
-                uploaded_count = int(result.get("uploaded_count", 0) or 0)
-                local_files_count = int(result.get("local_files_count", 0) or len(result.get("generated_files", [])))
-                st.caption(f"Fichiers présents dans le runtime local : {local_files_count}")
-                if result.get("drive_saved"):
-                    st.success(f"☁️ Sauvegarde Google Drive réussie — **{uploaded_count}** fichier(s) uploadé(s)")
-                else:
-                    msg = drive_result.get("error") or drive_result.get("warning") or drive_result.get("message") or "Aucun fichier confirmé sur Drive"
-                    st.warning(f"☁️ Sauvegarde Google Drive non confirmée — **{uploaded_count}** fichier(s) uploadé(s). {msg}")
-
-                st.info("💡 Depuis Streamlit Cloud, le dossier local affiché est celui du serveur de l'application. Pour retrouver automatiquement les PDF sur votre PC, il faut synchroniser Google Drive sur l'ordinateur ou lancer l'app en local.")
-
-                if drive_result.get("errors"):
-                    with st.expander("⚠️ Détails des erreurs Google Drive"):
-                        for err in drive_result.get("errors", []):
-                            st.write(f"• {err}")
-
-                if result.get("generated_files"):
-                    with st.expander("📋 Aperçu des fichiers générés"):
-                        for f in result["generated_files"][:20]:
-                            st.write(f"• {os.path.basename(f)}")
-
-                if STORAGE_MANAGER_AVAILABLE and result.get("drive_saved"):
-                    st.caption("💡 En Streamlit Cloud, le local correspond au runtime du serveur. Pour les retrouver durablement, utilisez Google Drive synchronisé sur votre ordinateur.")
+                st.info(f"📁 Dossier utilisé : **{os.path.basename(folder_used)}**")
+                if generated_files:
+                    st.caption(f"{len(generated_files)} PDF(s) généré(s) dans ce dossier.")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
 
     with tab2:
         st.markdown("### 🔄 Remplacer factures pour certaines familles")
-
-        if not latest or not latest.get("path"):
+        mode_regen, selected_folder_regen = _render_invoice_folder_selector("invoice_folder_mode_regen", "invoice_folder_select_regen", default_to_latest=False)
+        if mode_regen != "Utiliser un dossier existant":
+            st.warning("⚠️ Pour remplacer des factures existantes, sélectionnez un dossier existant.")
+            return
+        if not selected_folder_regen:
             st.error("❌ Aucun dossier de factures existant. Générez d'abord toutes les factures.")
+            return
+        selected_folder_path = _ensure_local_invoice_folder(selected_folder_regen)
+        if not selected_folder_path:
+            st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
             return
 
         st.info("""
-        💡 **Pour générer une ou plusieurs factures**, rendez-vous d'abord dans l'onglet 
+        💡 **Pour générer une ou plusieurs factures**, rendez-vous d'abord dans l'onglet
         **Créer liens paiement** → **Régénérer pour certaines familles**.
         """)
-
         if st.button("💳 Aller à « Régénérer liens pour certaines familles »", key="goto_payment_regen"):
             st.session_state.current_page = "payment"
             st.rerun()
 
         st.markdown("---")
-        st.warning(f"""
-        ⚠️ **Attention** : Les nouvelles factures remplaceront celles existantes dans le dossier :
-        **{latest['name']}**
-        """)
+        st.warning(f"⚠️ **Attention** : Les nouvelles factures remplaceront celles existantes dans le dossier : **{selected_folder_regen['month']}**")
         st.info("""
         💡 **Note** : La mise à jour Notion n'est nécessaire que si le **prix** ou les **horaires** ont changé.
         Si vous corrigez uniquement une erreur de mise en page, pas besoin de mettre à jour Notion.
@@ -1131,20 +1129,8 @@ def page_invoices(ctx):
         preselected = st.session_state.get("regenerated_families", [])
         family_list = [(fam_id, fam.get("parent_name", fam_id)) for fam_id, fam in data.items()]
         family_names = [f"{name} ({fam_id})" for fam_id, name in family_list]
-
-        default_selection = []
-        for fam_id in preselected:
-            for fid, name in family_list:
-                if fid == fam_id:
-                    default_selection.append(f"{name} ({fid})")
-
-        selected_families_display = st.multiselect(
-            "📋 Sélectionnez les familles",
-            family_names,
-            default=default_selection,
-            key="select_families_invoices_regen"
-        )
-
+        default_selection = [f"{name} ({fid})" for fid, name in family_list if fid in preselected]
+        selected_families_display = st.multiselect("📋 Sélectionnez les familles", family_names, default=default_selection, key="select_families_invoices_regen")
         selected_family_ids = []
         for sel in selected_families_display:
             for fam_id, name in family_list:
@@ -1153,7 +1139,6 @@ def page_invoices(ctx):
 
         if selected_family_ids:
             st.info(f"📊 **{len(selected_family_ids)}** famille(s) sélectionnée(s)")
-
             if st.button("🔄 Régénérer les factures sélectionnées", type="primary", width="stretch", key="regen_invoices"):
                 familles_euros = ctx["load_familles_euros"]()
                 candidates = [
@@ -1161,7 +1146,6 @@ def page_invoices(ctx):
                     os.path.join(ctx["BASE_DIR"], "assets", "logo.png"),
                 ]
                 logo_path = next((p for p in candidates if os.path.exists(p)), None)
-
                 progress = st.progress(0)
                 status = st.empty()
 
@@ -1172,14 +1156,13 @@ def page_invoices(ctx):
                 filtered_data = {fid: fam for fid, fam in data.items() if fid in selected_family_ids}
                 result = run_generate_invoices(
                     filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
-                    target_folder_path=latest["path"]
+                    target_folder_path=selected_folder_path,
                 )
-
                 if result["success"]:
                     st.session_state.regenerated_invoices_families = selected_family_ids
                     st.session_state.regenerated_invoices_paths = result.get("generated_files", [])
                     st.session_state.show_download_invoices = True
-                    st.success(f"✅ **{result['invoices']}** factures régénérées dans **{latest['name']}** !")
+                    st.success(f"✅ **{result['invoices']}** factures régénérées dans **{selected_folder_regen['month']}** !")
                     st.rerun()
                 else:
                     st.error(f"❌ Erreur : {result['error']}")
@@ -1187,39 +1170,26 @@ def page_invoices(ctx):
             if st.session_state.get("show_download_invoices"):
                 st.markdown("---")
                 generated_files = st.session_state.get("regenerated_invoices_paths", [])
-
                 if generated_files:
                     st.success(f"📄 **{len(generated_files)}** facture(s) régénérée(s)")
-                    import zipfile
-                    import io
+                    import zipfile, io
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                         for file_path in generated_files:
                             if os.path.exists(file_path):
                                 zf.write(file_path, os.path.basename(file_path))
                     zip_buffer.seek(0)
-
-                    st.download_button(
-                        label="📥 Télécharger les factures régénérées (ZIP)",
-                        data=zip_buffer.getvalue(),
-                        file_name="factures_regenerees.zip",
-                        mime="application/zip",
-                        width="stretch"
-                    )
-
+                    st.download_button(label="📥 Télécharger les factures régénérées (ZIP)", data=zip_buffer.getvalue(), file_name="factures_regenerees.zip", mime="application/zip", width="stretch")
                     with st.expander("📋 Fichiers régénérés"):
                         for f in generated_files:
                             st.write(f"• {os.path.basename(f)}")
-
                 st.markdown("---")
                 st.info("💡 **Rappel** : Mettez à jour Notion uniquement si le prix ou les horaires ont changé.")
-
                 if st.button("📤 Aller à Mettre à jour Notion →", width="stretch", key="goto_notion"):
                     st.session_state.current_page = "update"
                     st.session_state.update_tab = "selective"
                     st.session_state.show_download_invoices = False
                     st.rerun()
-
                 if st.button("✅ Terminé (pas besoin de Notion)", width="stretch", key="done_no_notion"):
                     st.session_state.show_download_invoices = False
                     st.session_state.regenerated_invoices_families = []
@@ -1228,22 +1198,13 @@ def page_invoices(ctx):
         else:
             st.warning("⚠️ Sélectionnez au moins une famille.")
 
-        st.session_state.invoices_tab = None
-
-
 def page_send(ctx):
     st.markdown('<div class="section-title">📧 Envoyer les Factures</div>', unsafe_allow_html=True)
 
     data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-    latest = _get_latest_invoice_folder_resolved(ctx)
-
     if not data:
         st.warning("⚠️ Aucune donnée extraite")
-        return
-
-    if not latest or not latest.get("path") or not os.path.exists(latest["path"]):
-        st.warning("⚠️ Aucun dossier de factures trouvé")
         return
 
     gmail_config = secrets.get("gmail", {}) if secrets else {}
@@ -1254,86 +1215,85 @@ def page_send(ctx):
             st.rerun()
         return
 
-    st.info(f"📁 Dossier : **{latest['name']}**")
-    folder_families = get_families_from_folder(latest["path"], data)
-    if folder_families:
-        st.caption(f"{len(folder_families)} famille(s) reconnue(s) avec au moins une facture PDF")
-    else:
-        st.warning("⚠️ Aucun PDF exploitable trouvé dans ce dossier pour l'instant.")
+    mode_send, selected_folder = _render_invoice_folder_selector("invoice_folder_mode_send", "invoice_folder_select_send", default_to_latest=False)
+    if mode_send != "Utiliser un dossier existant":
+        st.warning("⚠️ Sélectionnez un dossier existant pour envoyer des factures.")
+        return
+    if not selected_folder:
+        st.warning("⚠️ Aucun dossier de factures trouvé")
+        return
+    folder_path = _ensure_local_invoice_folder(selected_folder)
+    if not folder_path:
+        st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
+        return
 
-    month_name, year = ctx["get_month_year_from_folder"](latest)
-    template = get_default_email_template(month_name, year)
+    st.info(f"📁 Dossier : **{selected_folder['month']}**")
+    month_name, year = ctx["get_month_year_from_folder"]({"name": selected_folder["month"], "date": _parse_invoice_folder_dt(selected_folder['month'])})
+    template_fr = get_default_email_template(month_name, year, language="fr")
+    template_en = get_default_email_template(month_name, year, language="en")
 
-    subject = st.text_input("📝 Sujet", value=template["subject"])
-    body = st.text_area("✉️ Message", value=template["body"], height=250)
-    st.caption("🌍 Les familles marquées avec **Langue = Anglais** dans Notion « Profs hors TutorBird » reçoivent automatiquement l'email en anglais et une facture PDF en anglais. Sans langue précisée, le français est utilisé par défaut.")
+    tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
+    with tab_fr:
+        subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="invoice_mail_subject_fr")
+        body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="invoice_mail_body_fr")
+    with tab_en:
+        subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="invoice_mail_subject_en")
+        body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="invoice_mail_body_en")
 
     st.markdown("---")
     st.markdown("### 📬 Options d'envoi")
-
     col1, col2 = st.columns(2)
     with col1:
-        send_all = st.radio(
-            "Envoyer à :",
-            ["Toutes les familles", "Sélection personnalisée"],
-            key="send_mode"
-        )
-
+        send_all = st.radio("Envoyer à :", ["Toutes les familles", "Sélection personnalisée"], key="send_mode")
     with col2:
         send_test = st.checkbox("📧 Envoyer d'abord à moi-même (test)", value=True)
 
     selected_families = None
+    families = get_families_from_folder(folder_path, data)
     if send_all == "Sélection personnalisée":
-        family_names = [f["parent_name"] for f in folder_families]
+        family_names = [f["parent_name"] for f in families]
         selected_names = st.multiselect("Sélectionner les familles", family_names)
-        selected_families = [f["family_id"] for f in folder_families if f["parent_name"] in selected_names]
+        selected_families = [f["family_id"] for f in families if f["parent_name"] in selected_names]
 
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch"):
             progress = st.progress(0)
             status = st.empty()
-
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
-
             result = run_send_invoices(
-                secrets, data, latest["path"],
+                secrets, data, folder_path,
                 custom_subject=subject, custom_body=body,
+                custom_subject_en=subject_en, custom_body_en=body_en,
                 selected_families=selected_families,
                 send_to_test=True, callback=callback
             )
-
             if result["success"]:
                 st.success(f"✅ Test envoyé à {gmail_config['email']}")
-                st.caption(f"PDF trouvés: {result.get('found_pdfs', 0)} | Familles reconnues: {result.get('matched_families', 0)}")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
 
     if st.button("📧 Envoyer les factures aux clients", type="primary", width="stretch"):
         progress = st.progress(0)
         status = st.empty()
-
         def callback(p, m):
             progress.progress(p)
             status.info(m)
-
         result = run_send_invoices(
-            secrets, data, latest["path"],
+            secrets, data, folder_path,
             custom_subject=subject, custom_body=body,
+            custom_subject_en=subject_en, custom_body_en=body_en,
             selected_families=selected_families,
             send_to_test=False, callback=callback
         )
-
         if result["success"]:
             st.success(f"✅ **{result['sent']}/{result['total']}** emails envoyés")
-            st.caption(f"PDF trouvés: {result.get('found_pdfs', 0)} | Familles reconnues: {result.get('matched_families', 0)}")
             if result.get("errors"):
                 for err in result["errors"]:
                     st.warning(f"⚠️ {err}")
         else:
             st.error(f"❌ Erreur : {result['error']}")
-
 
 def page_reminders(ctx):
     st.markdown('<div class="section-title">🔔 Rappels de Paiement</div>', unsafe_allow_html=True)
