@@ -6,6 +6,8 @@ VERSION 2.1 - Avec onglets régénération
 import streamlit as st
 import os
 import json
+import io
+import zipfile
 from datetime import datetime, time
 import calendar
 
@@ -25,6 +27,7 @@ from scripts.create_payment_links_no_split import run_create_payment_links_no_sp
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
 from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
 from scripts.storage_manager import list_invoice_folders, load_invoice_folder
+from scripts.config_loader import is_streamlit_cloud
 
 
 def page_accueil(ctx):
@@ -968,6 +971,7 @@ def _render_payment_options(ctx, secrets, prefix):
 
 
 
+
 def _parse_invoice_folder_dt(folder_name):
     date_part = folder_name.split(" - ")[-1]
     for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
@@ -978,11 +982,20 @@ def _parse_invoice_folder_dt(folder_name):
     return datetime.min
 
 
+def _folder_source_label(folder):
+    source = (folder or {}).get("source", "local")
+    if source == "both":
+        return "Local + Drive"
+    if source == "drive":
+        return "Drive"
+    return "Local"
+
+
 def _invoice_folder_choices():
     folders = list_invoice_folders()
     choices = []
     for f in folders:
-        label = f"{f['month']} · {('Drive' if f.get('source') == 'drive' else 'Local')}"
+        label = f"{f['month']} · {_folder_source_label(f)}"
         choices.append((label, f))
     return choices
 
@@ -992,7 +1005,7 @@ def _ensure_local_invoice_folder(folder):
         return None
     if folder.get("path") and os.path.exists(folder["path"]):
         return folder["path"]
-    if folder.get("source") == "drive":
+    if folder.get("source") in {"drive", "both"}:
         result = load_invoice_folder(folder.get("year"), folder.get("month"))
         if result.get("success"):
             return result.get("local_path")
@@ -1018,13 +1031,29 @@ def _render_invoice_folder_selector(mode_key, selection_key, default_to_latest=T
             default_index = 0
             selected_label = st.selectbox("Choisir un dossier", labels, index=default_index, key=selection_key)
             selected_folder = dict(choices[labels.index(selected_label)][1])
-            st.info(f"📂 Dossier sélectionné : **{selected_folder['month']}** ({selected_folder.get('source', 'local')})")
+            st.info(
+                f"📂 Dossier sélectionné : **{selected_folder['month']}** "
+                f"({_folder_source_label(selected_folder)})"
+            )
     else:
         st.info("📁 Un nouveau dossier sera créé. Si un dossier existe déjà aujourd'hui, l'heure sera ajoutée automatiquement au nom du dossier.")
     return mode, selected_folder
 
 
+def _zip_folder_bytes(folder_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(folder_path):
+            for filename in files:
+                full_path = os.path.join(root, filename)
+                arcname = os.path.relpath(full_path, folder_path)
+                zf.write(full_path, arcname)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def page_invoices(ctx):
+
     st.markdown('<div class="section-title">📄 Générer les Factures</div>', unsafe_allow_html=True)
 
     if not st.session_state.has_extracted:
@@ -1048,6 +1077,17 @@ def page_invoices(ctx):
             st.warning("⚠️ Les liens de paiement n'ont pas été générés.")
 
         mode, selected_folder = _render_invoice_folder_selector("invoice_folder_mode_all", "invoice_folder_select_all")
+
+        save_local_copy = st.checkbox(
+            "💾 Sauvegarder aussi une copie sur cet ordinateur",
+            value=False,
+            key="save_invoice_copy_local_pc",
+            help="Depuis Streamlit Cloud, l'application ne peut pas écrire directement sur votre PC. Si vous cochez cette case, une copie téléchargeable du dossier sera proposée après génération."
+        )
+        if is_streamlit_cloud():
+            st.caption("Depuis Streamlit Cloud, la sauvegarde sur l'ordinateur passe par un téléchargement manuel après génération.")
+        else:
+            st.caption("En exécution locale, les fichiers sont déjà créés sur votre ordinateur.")
 
         candidates = [
             os.path.join(ctx["BASE_DIR"], "Professor_logo_dernier.png"),
@@ -1083,17 +1123,30 @@ def page_invoices(ctx):
             if result["success"]:
                 folder_used = result.get("folder")
                 generated_files = result.get("generated_files", [])
+                source_for_state = "both" if result.get("drive_saved") else "local"
                 st.session_state.invoice_work_folder = {
                     "path": folder_used,
                     "name": os.path.basename(folder_used) if folder_used else "",
                     "year": os.path.basename(os.path.dirname(folder_used)) if folder_used else "",
                     "month": os.path.basename(folder_used) if folder_used else "",
-                    "source": "local",
+                    "source": source_for_state,
                 }
                 st.success(f"✅ **{result['invoices']}** factures créées")
                 st.info(f"📁 Dossier utilisé : **{os.path.basename(folder_used)}**")
+                drive_status = "Local + Drive" if result.get("drive_saved") else "Local"
+                st.caption(f"Source confirmée : **{drive_status}**")
                 if generated_files:
                     st.caption(f"{len(generated_files)} PDF(s) généré(s) dans ce dossier.")
+                if save_local_copy and folder_used and os.path.exists(folder_used):
+                    zip_bytes = _zip_folder_bytes(folder_used)
+                    st.download_button(
+                        "⬇️ Télécharger une copie locale du dossier",
+                        data=zip_bytes,
+                        file_name=f"{os.path.basename(folder_used)}.zip",
+                        mime="application/zip",
+                        key=f"download_invoice_folder_{os.path.basename(folder_used)}",
+                        width="stretch",
+                    )
             else:
                 st.error(f"❌ Erreur : {result['error']}")
 

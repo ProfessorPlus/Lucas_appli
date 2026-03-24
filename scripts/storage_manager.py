@@ -291,15 +291,16 @@ def load_invoice_folder(year, month_folder_name, local_base_path=None):
         return {"success": False, "error": str(e)}
 
 
+
 def list_invoice_folders():
     """
     Liste tous les dossiers de factures disponibles.
-    
+
     Returns:
-        list: [{"year": str, "month": str, "path": str, "source": "local"|"drive"}]
+        list: [{"year": str, "month": str, "path": str|None, "source": "local"|"drive"|"both"}]
     """
-    folders = []
-    
+    folders_map = {}
+
     # 1. Lister les dossiers locaux
     local_base = get_invoices_dir()
     if os.path.exists(local_base):
@@ -309,59 +310,59 @@ def list_invoice_folders():
                 for month_folder in os.listdir(year_path):
                     month_path = os.path.join(year_path, month_folder)
                     if os.path.isdir(month_path):
-                        folders.append({
+                        key = (year, month_folder)
+                        folders_map[key] = {
                             "year": year,
                             "month": month_folder,
                             "path": month_path,
-                            "source": "local"
-                        })
-    
+                            "source": "local",
+                        }
+
     # 2. Si Streamlit Cloud, lister aussi Google Drive
     if is_streamlit_cloud() and DRIVE_AVAILABLE:
         try:
             from scripts.google_drive import list_files_in_folder
-            
+
             service = get_drive_service()
             factures_folder_id = _get_folder_id("Factures")
-            
+
             if factures_folder_id:
-                # Lister les années
                 years = list_files_in_folder(service, factures_folder_id)
                 for year_file in years:
                     if year_file["mimeType"] == "application/vnd.google-apps.folder":
-                        # Lister les mois
                         months = list_files_in_folder(service, year_file["id"])
                         for month_file in months:
                             if month_file["mimeType"] == "application/vnd.google-apps.folder":
-                                # Vérifier si pas déjà dans la liste locale
-                                exists = any(
-                                    f["year"] == year_file["name"] and f["month"] == month_file["name"]
-                                    for f in folders
-                                )
-                                if not exists:
-                                    folders.append({
+                                key = (year_file["name"], month_file["name"])
+                                existing = folders_map.get(key)
+                                if existing:
+                                    existing["source"] = "both"
+                                    existing["drive_id"] = month_file["id"]
+                                else:
+                                    folders_map[key] = {
                                         "year": year_file["name"],
                                         "month": month_file["name"],
-                                        "path": None,  # Pas encore téléchargé
+                                        "path": None,
                                         "source": "drive",
-                                        "drive_id": month_file["id"]
-                                    })
+                                        "drive_id": month_file["id"],
+                                    }
         except Exception as e:
             print(f"⚠️ Erreur listing Drive: {e}")
-    
-    # Trier par date
+
+    folders = list(folders_map.values())
+
     def sort_key(f):
         try:
             date_part = f["month"].split(" - ")[-1]
             for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
                 try:
                     return datetime.strptime(date_part, fmt)
-                except:
+                except Exception:
                     pass
             return datetime.min
-        except:
+        except Exception:
             return datetime.min
-    
+
     folders.sort(key=sort_key, reverse=True)
     return folders
 
