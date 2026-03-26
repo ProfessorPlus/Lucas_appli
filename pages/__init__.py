@@ -1687,37 +1687,70 @@ def page_reminders(ctx):
 
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)
-    
-    st.info("""
-    **À quoi sert cette synchronisation ?**
-    
-    Cette fonction récupère les paiements effectués sur Stripe et :
-    1. Marque automatiquement les lignes comme "Payé" dans Notion
-    2. Met à jour les tableaux dans les pages des professeurs
-    3. Met à jour les récapitulatifs de paiements
-    4. Met à jour le dashboard global
-    
-    **Matching par :** Prof + Élève + Montant (via extraction du reçu Stripe)
-    """)
-    
+
     secrets = ctx["load_secrets"]()
     latest = ctx["get_latest_invoice_folder"]()
-    
+
     # Détecter le mode no-split
     is_no_split = st.session_state.get("no_split_mode_active", False)
-    
+
     if is_no_split:
+        st.info("""
+        **À quoi sert cette synchronisation en mode sans transfert ?**
+
+        Cette version :
+        1. marque les lignes comme **Payé** dans la base paiements Notion
+        2. met à jour le **dashboard global**
+        3. **ne met pas à jour** les tableaux des pages professeurs
+
+        **Matching par :** Famille + Montant
+        """)
         st.info("🏦 **Mode sans transfert détecté** — Sync simplifiée (famille + montant, pas de pages profs)")
-    
-    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True)
-    
-    if use_latest and latest:
-        since_date = latest["date"]
-        st.info(f"📅 Depuis : {since_date.strftime('%d/%m/%Y')}")
     else:
-        since_date = st.date_input("📅 Depuis la date")
+        st.info("""
+        **À quoi sert cette synchronisation ?**
+
+        Cette fonction récupère les paiements effectués sur Stripe et :
+        1. Marque automatiquement les lignes comme "Payé" dans Notion
+        2. Met à jour les tableaux dans les pages des professeurs
+        3. Met à jour les récapitulatifs de paiements
+        4. Met à jour le dashboard global
+
+        **Matching par :** Prof + Élève + Montant (via extraction du reçu Stripe)
+        """)
+
+    available_folders = _invoice_folder_choices()
+    latest_label = available_folders[0][0] if available_folders else None
+
+    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True, key="sync_use_latest_invoice_folder")
+
+    selected_folder = None
+    if use_latest:
+        if available_folders:
+            selected_label = st.selectbox(
+                "Choisir un dossier",
+                [c[0] for c in available_folders],
+                index=0,
+                key="sync_invoice_folder_select",
+            )
+            selected_folder = dict(available_folders[[c[0] for c in available_folders].index(selected_label)][1])
+            since_date = _parse_invoice_folder_dt(selected_folder["month"])
+            st.info(
+                f"📂 Dossier sélectionné : **{selected_folder['month']}** "
+                f"({_folder_source_label(selected_folder)})"
+            )
+        elif latest:
+            selected_folder = latest
+            since_date = latest["date"]
+            st.info(f"📅 Depuis : {since_date.strftime('%d/%m/%Y')}")
+        else:
+            st.warning("⚠️ Aucun dossier de factures disponible en local ou sur Drive.")
+            since_date = st.date_input("📅 Depuis la date", key="sync_since_date_fallback")
+            since_date = datetime.combine(since_date, time(0, 0))
+    else:
+        since_date = st.date_input("📅 Depuis la date", key="sync_since_date_manual")
         since_date = datetime.combine(since_date, time(0, 0))
-    
+
     if st.button("🔄 Synchroniser", type="primary", width="stretch"):
         progress = st.progress(0)
         status = st.empty()

@@ -22,6 +22,7 @@ from scripts.update_notion import run_update_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
+from scripts.storage_manager import list_invoice_folders
 
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
@@ -188,10 +189,33 @@ def load_extracted_data():
     return {}
 
 def get_latest_invoice_folder():
+    """Retourne le dossier de factures le plus récent, y compris s'il n'existe que sur Drive."""
+    try:
+        folders = list_invoice_folders()
+    except Exception:
+        folders = []
+
+    if folders:
+        latest = dict(folders[0])
+        latest["name"] = latest.get("month", latest.get("name", ""))
+        try:
+            date_part = latest["name"].split(" - ")[-1]
+            for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
+                try:
+                    latest["date"] = datetime.strptime(date_part, fmt)
+                    break
+                except Exception:
+                    continue
+            else:
+                latest["date"] = datetime.min
+        except Exception:
+            latest["date"] = datetime.min
+        return latest
+
     invoice_dir = os.path.join(BASE_DIR, "Factures")
     if not os.path.exists(invoice_dir):
         return None
-    
+
     folders = []
     for year in os.listdir(invoice_dir):
         year_path = os.path.join(invoice_dir, year)
@@ -202,10 +226,10 @@ def get_latest_invoice_folder():
                     try:
                         date_part = month_folder.split(" - ")[-1]
                         dt = datetime.strptime(date_part, "%d-%m-%Y")
-                        folders.append({"path": month_path, "date": dt, "name": month_folder})
-                    except:
+                        folders.append({"path": month_path, "date": dt, "name": month_folder, "month": month_folder, "year": year, "source": "local"})
+                    except Exception:
                         pass
-    
+
     if folders:
         folders.sort(key=lambda x: x["date"], reverse=True)
         return folders[0]
