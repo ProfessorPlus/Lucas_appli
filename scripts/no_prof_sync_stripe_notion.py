@@ -10,6 +10,7 @@ Utilisé quand le mode "tout recevoir sur mon compte" est activé.
 import time
 import requests
 from datetime import datetime
+from typing import Any
 
 try:
     import stripe
@@ -17,6 +18,108 @@ except ImportError:
     stripe = None
 
 REQUEST_DELAY = 0.20
+
+
+def _stripe_to_plain_dict(obj: Any):
+    """Convertit un objet Stripe/Mapping en dict Python simple quand possible."""
+    if not obj:
+        return {}
+    if isinstance(obj, dict):
+        return dict(obj)
+    try:
+        return dict(obj)
+    except Exception:
+        pass
+
+    data = {}
+    # Fallback minimal pour les StripeObject qui ne se convertissent pas directement.
+    for key in [
+        "parent_name", "family_name", "customer_name", "name", "full_name",
+        "billing_name", "receipt_email", "email", "family_id"
+    ]:
+        try:
+            value = obj[key]
+        except Exception:
+            try:
+                value = getattr(obj, key)
+            except Exception:
+                value = None
+        if value not in (None, ""):
+            data[key] = value
+    return data
+
+
+def _first_non_empty(*values):
+    for value in values:
+        if isinstance(value, str):
+            if value.strip():
+                return value.strip()
+        elif value not in (None, ""):
+            return value
+    return ""
+
+
+def _metadata_value(metadata, *keys):
+    data = _stripe_to_plain_dict(metadata)
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _extract_charge_family_name(ch):
+    """Essaie plusieurs sources pour retrouver le nom de la famille/parent."""
+    # 1) Metadata directement sur la charge
+    family_name = _metadata_value(
+        getattr(ch, "metadata", None),
+        "parent_name", "family_name", "customer_name", "name", "full_name", "billing_name"
+    )
+
+    # 2) Metadata du PaymentIntent (très fréquent avec Payment Links / Checkout)
+    payment_intent_id = getattr(ch, "payment_intent", None)
+    if not family_name and payment_intent_id and stripe is not None:
+        try:
+            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+            family_name = _metadata_value(
+                getattr(pi, "metadata", None),
+                "parent_name", "family_name", "customer_name", "name", "full_name", "billing_name"
+            )
+        except Exception:
+            pass
+
+    # 3) Customer Stripe
+    customer_id = getattr(ch, "customer", None)
+    if not family_name and customer_id and stripe is not None:
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            family_name = _first_non_empty(
+                _metadata_value(
+                    getattr(customer, "metadata", None),
+                    "parent_name", "family_name", "customer_name", "name", "full_name"
+                ),
+                getattr(customer, "name", None),
+                getattr(customer, "email", None),
+            )
+        except Exception:
+            pass
+
+    # 4) Billing details de la charge
+    if not family_name:
+        billing_details = getattr(ch, "billing_details", None)
+        family_name = _first_non_empty(
+            _metadata_value(billing_details, "name", "full_name", "billing_name"),
+            getattr(billing_details, "name", None) if billing_details else None,
+        )
+
+    # 5) Derniers fallback utiles
+    if not family_name:
+        family_name = _first_non_empty(
+            getattr(ch, "description", None),
+            getattr(ch, "receipt_email", None),
+        )
+
+    return family_name.strip() if isinstance(family_name, str) else ""
 
 
 def normalize_name(n):
@@ -77,6 +180,8 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 r = requests.patch(url, headers=HEADERS, json=json_data, timeout=30)
             elif method == "GET":
                 r = requests.get(url, headers=HEADERS, timeout=30)
+            elif method == "DELETE":
+                r = requests.delete(url, headers=HEADERS, timeout=30)
             else:
                 return None
             
@@ -131,18 +236,8 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 except Exception:
                     pass
             
-            # Extraire le nom de la famille depuis les metadata
-            family_name = ""
-            if ch.metadata:
-                family_name = ch.metadata.get("parent_name", "")
-            
-            # Ou depuis la description/customer
-            if not family_name and ch.customer:
-                try:
-                    customer = stripe.Customer.retrieve(ch.customer)
-                    family_name = customer.name or customer.email or ""
-                except Exception:
-                    pass
+            # Extraire le nom de la famille de façon robuste (charge / PI / customer / billing details)
+            family_name = _extract_charge_family_name(ch)
             
             stripe_payments.append({
                 "charge_id": ch.id,
