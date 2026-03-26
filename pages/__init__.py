@@ -1688,176 +1688,115 @@ def page_reminders(ctx):
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)
 
+    st.info("""
+    **À quoi sert cette synchronisation ?**
+
+    Cette version fonctionne **uniquement en mode no-split**.
+
+    Elle récupère les paiements Stripe sur le compte principal puis :
+    1. Marque automatiquement les lignes comme **"Payé"** dans Notion
+    2. Renseigne la **date du paiement**
+    3. Met à jour le **dashboard global / récapitulatif paiements**
+
+    **Aucune mise à jour des pages professeurs n'est faite ici.**
+
+    **Matching par :** Famille + Montant
+    """)
+
     secrets = ctx["load_secrets"]()
-    latest = ctx["get_latest_invoice_folder"]()
+    secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
 
-    # Détecter le mode no-split
-    is_no_split = st.session_state.get("no_split_mode_active", False)
+    if not secrets:
+        st.error("❌ secrets.yaml non trouvé !")
+        return
+    if not secrets_no_prof:
+        st.error("❌ secrets_no_prof.yaml non trouvé !")
+        return
 
-    if is_no_split:
-        st.info("""
-        **À quoi sert cette synchronisation en mode sans transfert ?**
+    def _parse_folder_datetime(folder):
+        if not folder:
+            return None
+        month_value = folder.get("month") or folder.get("name") or ""
+        date_part = month_value.split(" - ")[-1].strip()
+        for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(date_part, fmt)
+            except Exception:
+                pass
+        return None
 
-        Cette version :
-        1. marque les lignes comme **Payé** dans la base paiements Notion
-        2. met à jour le **dashboard global**
-        3. **ne met pas à jour** les tableaux des pages professeurs
+    def _folder_label(folder):
+        month_value = folder.get("month") or folder.get("name") or "Dossier inconnu"
+        source = folder.get("source", "local")
+        source_label = {
+            "drive": "Drive",
+            "local": "Local",
+            "both": "Local + Drive",
+        }.get(source, source)
+        return f"{month_value} · {source_label}"
 
-        **Matching par :** Famille + Montant
-        """)
-        st.info("🏦 **Mode sans transfert détecté** — Sync simplifiée (famille + montant, pas de pages profs)")
-    else:
-        st.info("""
-        **À quoi sert cette synchronisation ?**
+    available_folders = list_invoice_folders() or []
+    available_folders = [f for f in available_folders if _parse_folder_datetime(f) is not None]
 
-        Cette fonction récupère les paiements effectués sur Stripe et :
-        1. Marque automatiquement les lignes comme "Payé" dans Notion
-        2. Met à jour les tableaux dans les pages des professeurs
-        3. Met à jour les récapitulatifs de paiements
-        4. Met à jour le dashboard global
+    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True, key="sync_use_latest")
 
-        **Matching par :** Prof + Élève + Montant (via extraction du reçu Stripe)
-        """)
-
-    available_folders = _invoice_folder_choices()
-    latest_label = available_folders[0][0] if available_folders else None
-
-    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True, key="sync_use_latest_invoice_folder")
-
+    since_date = None
     selected_folder = None
-    if use_latest:
-        if available_folders:
-            selected_label = st.selectbox(
-                "Choisir un dossier",
-                [c[0] for c in available_folders],
-                index=0,
-                key="sync_invoice_folder_select",
-            )
-            selected_folder = dict(available_folders[[c[0] for c in available_folders].index(selected_label)][1])
-            since_date = _parse_invoice_folder_dt(selected_folder["month"])
-            st.info(
-                f"📂 Dossier sélectionné : **{selected_folder['month']}** "
-                f"({_folder_source_label(selected_folder)})"
-            )
-        elif latest:
-            selected_folder = latest
-            since_date = latest["date"]
-            st.info(f"📅 Depuis : {since_date.strftime('%d/%m/%Y')}")
-        else:
-            st.warning("⚠️ Aucun dossier de factures disponible en local ou sur Drive.")
-            since_date = st.date_input("📅 Depuis la date", key="sync_since_date_fallback")
-            since_date = datetime.combine(since_date, time(0, 0))
-    else:
-        since_date = st.date_input("📅 Depuis la date", key="sync_since_date_manual")
-        since_date = datetime.combine(since_date, time(0, 0))
 
-    if st.button("🔄 Synchroniser", type="primary", width="stretch"):
+    if use_latest and available_folders:
+        folder_labels = [_folder_label(f) for f in available_folders]
+        selected_label = st.selectbox(
+            "Choisir un dossier",
+            options=folder_labels,
+            index=0,
+            key="sync_selected_invoice_folder",
+        )
+        selected_folder = available_folders[folder_labels.index(selected_label)]
+        since_date = _parse_folder_datetime(selected_folder)
+
+        source = selected_folder.get("source", "local")
+        source_label = {
+            "drive": "Drive",
+            "local": "Local",
+            "both": "Local + Drive",
+        }.get(source, source)
+        st.info(f"📁 Dossier sélectionné : **{selected_folder.get('month', selected_folder.get('name', '—'))}** ({source_label})")
+
+    elif use_latest and not available_folders:
+        st.warning("⚠️ Aucun dossier de factures disponible. Sélection manuelle de la date utilisée à la place.")
+
+    if since_date is None:
+        manual_date = st.date_input("📅 Depuis la date", key="sync_manual_since_date")
+        since_date = datetime.combine(manual_date, time(0, 0))
+
+    if st.button("🔄 Synchroniser", type="primary", width="stretch", key="sync_run_button"):
         progress = st.progress(0)
         status = st.empty()
-        
-        if is_no_split:
-            # ===========================
-            # MODE NO-SPLIT : sync simplifiée
-            # ===========================
-            def callback_ns(p, m):
-                progress.progress(p)
-                status.info(m)
-            
-            secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
-            if not secrets_no_prof:
-                st.error("❌ secrets_no_prof.yaml non trouvé !")
-                return
-            
-            result1 = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
-            
-            progress.progress(100)
-            status.empty()
-            
-            if result1["success"]:
-                st.success(f"""
-                ✅ **Synchronisation no-split terminée**
-                
-                - {result1['synced']} paiement(s) synchronisé(s)
-                - {result1['already_paid']} déjà marqué(s) payé(s)
-                - {result1['total_not_found']} non trouvé(s) dans Notion
-                """)
-                
-                if result1.get("not_found"):
-                    with st.expander("⚠️ Paiements non trouvés dans Notion"):
-                        for nf in result1["not_found"]:
-                            st.write(f"• {nf}")
-            else:
-                st.error(f"❌ Erreur : {result1['error']}")
-        
-        else:
-            # ===========================
-            # MODE NORMAL : sync avec pages profs
-            # ===========================
-            def callback1(p, m):
-                progress.progress(int(p * 0.5))
-                status.info(f"[1/2] {m}")
-            
-            from scripts.sync_stripe_notion import run_sync_stripe_notion
-            result1 = run_sync_stripe_notion(secrets, since_date, callback1)
-            
-            if not result1["success"]:
-                st.error(f"❌ Erreur sync Stripe : {result1['error']}")
-                return
-            
-            # ===========================
-            # ÉTAPE 2: Mise à jour des pages profs
-            # ===========================
-            def callback2(p, m):
-                progress.progress(50 + int(p * 0.5))
-                status.info(f"[2/2] {m}")
-            
-            from scripts.update_notion_prof_pages import run_update_notion_prof_pages
-            result2 = run_update_notion_prof_pages(secrets, callback2, force=False, latest_only=False)
-            
-            progress.progress(100)
-            status.empty()
-            
-            # ===========================
-            # Affichage des résultats
-            # ===========================
-            if result1["success"] and result2["success"]:
-                st.success(f"""
-                ✅ **Synchronisation terminée**
-                
-                **Stripe → Notion :**
-                - {result1['synced']} paiement(s) synchronisé(s)
-                - {result1['already_paid']} déjà marqué(s) payé(s)
-                - {result1.get('student_unknown', 0)} élève(s) inconnu(s) (reçu vide)
-                - {result1['total_not_found']} non trouvé(s) dans Notion
-                
-                **Pages professeurs :**
-                - {result2['updated']} page(s) mise(s) à jour
-                - {result2['skipped']} page(s) déjà à jour
-                - {result2['recaps_updated']} récap(s) mis à jour
-                """)
-                
-                if result1.get("not_found"):
-                    with st.expander("⚠️ Paiements non trouvés dans Notion"):
-                        for nf in result1["not_found"]:
-                            st.write(f"• {nf}")
-            
-            elif result2 and not result2["success"]:
-                st.warning(f"""
-                ⚠️ **Sync Stripe OK, mais erreur pages profs**
-            
-            **Stripe → Notion :**
-            - {result1['synced']} paiement(s) synchronisé(s)
-            
-            **Erreur pages profs :**
-            {result2['error']}
+
+        def callback_ns(p, m):
+            progress.progress(max(0, min(int(p), 100)))
+            status.info(m)
+
+        result = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
+
+        progress.progress(100)
+        status.empty()
+
+        if result.get("success"):
+            st.success(f"""
+            ✅ **Synchronisation no-split terminée**
+
+            - {result.get('synced', 0)} paiement(s) synchronisé(s)
+            - {result.get('already_paid', 0)} déjà marqué(s) payé(s)
+            - {result.get('total_not_found', 0)} non trouvé(s) dans Notion
             """)
 
-"""
-Nouvelle version de page_update avec 3 onglets :
-1. Ajouter toutes les lignes
-2. Mettre à jour certaines lignes  
-3. Vérifier & Compléter (NOUVEAU)
-"""
+            if result.get("not_found"):
+                with st.expander("⚠️ Paiements non trouvés dans Notion"):
+                    for nf in result["not_found"]:
+                        st.write(f"• {nf}")
+        else:
+            st.error(f"❌ Erreur sync Stripe no-split : {result.get('error', 'Erreur inconnue')}")
 
 def page_update(ctx):
     st.markdown('<div class="section-title">📤 Ajouter lignes Notion</div>', unsafe_allow_html=True)
