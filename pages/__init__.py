@@ -26,8 +26,49 @@ from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_sing
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
 from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
-from scripts.storage_manager import list_invoice_folders, load_invoice_folder
+from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json
 from scripts.config_loader import is_streamlit_cloud
+
+
+def _try_load_data(ctx):
+    """
+    Essaie de charger les données extraites depuis :
+    1. Le fichier local (extraction récente)
+    2. Google Drive (extraction précédente)
+    Retourne le dict des familles ou {} si rien trouvé.
+    """
+    data = ctx["load_extracted_data"]()
+    if data:
+        return data
+    
+    # Fallback : essayer depuis Google Drive via storage_manager
+    try:
+        drive_data = storage_load_json("full_output_tb_SIMPLE.json", "data", default=None)
+        if drive_data:
+            # Sauvegarder localement pour les prochains appels
+            import json
+            local_path = os.path.join(ctx["DATA_DIR"], "full_output_tb_SIMPLE.json")
+            os.makedirs(ctx["DATA_DIR"], exist_ok=True)
+            with open(local_path, "w", encoding="utf-8") as f:
+                json.dump(drive_data, f, indent=2, ensure_ascii=False)
+            st.session_state.has_extracted = True
+            return drive_data
+    except Exception as e:
+        print(f"⚠️ Erreur chargement Drive: {e}")
+    
+    return {}
+
+
+def _render_no_data_warning(page_label="cette fonctionnalité"):
+    """Affiche un avertissement quand les données ne sont pas disponibles,
+    avec un bouton pour aller à l'extraction."""
+    st.warning(f"""
+    ⚠️ **Aucune donnée disponible** — Pour utiliser {page_label}, vous devez d'abord
+    extraire les données depuis TutorBird (ou avoir une extraction précédente sauvegardée sur Google Drive).
+    """)
+    if st.button("📥 Aller à l'extraction TutorBird", key=f"goto_extract_{page_label}"):
+        st.session_state.current_page = "extract"
+        st.rerun()
 
 
 def page_accueil(ctx):
@@ -520,12 +561,8 @@ def page_cleanup(ctx):
 def page_payment(ctx):
     st.markdown('<div class="section-title">💳 Créer les liens de paiement</div>', unsafe_allow_html=True)
     
-    # Chargement des données EN PREMIER
-    if not st.session_state.has_extracted:
-        st.warning("⚠️ Vous devez d'abord extraire les données TutorBird.")
-        return
-    
-    data = ctx["load_extracted_data"]()
+    # Chargement des données avec fallback Drive
+    data = _try_load_data(ctx)
     secrets = ctx["load_secrets"]()
     
     if not secrets:
@@ -533,7 +570,7 @@ def page_payment(ctx):
         return
     
     if not data:
-        st.error("❌ Aucune donnée extraite trouvée")
+        _render_no_data_warning("les liens de paiement")
         return
     
     configured_teachers = set(secrets.get("teachers", {}).keys())
@@ -1071,15 +1108,11 @@ def page_invoices(ctx):
 
     st.markdown('<div class="section-title">📄 Générer les Factures</div>', unsafe_allow_html=True)
 
-    if not st.session_state.has_extracted:
-        st.warning("⚠️ Vous devez d'abord extraire les données TutorBird.")
-        return
-
-    data = ctx["load_extracted_data"]()
+    data = _try_load_data(ctx)
     secrets = ctx["load_secrets"]()
 
     if not data:
-        st.error("❌ Aucune donnée extraite")
+        _render_no_data_warning("la génération de factures")
         return
 
     default_tab = 1 if st.session_state.get("invoices_tab") == "regen" else 0
@@ -1269,11 +1302,7 @@ def page_invoices(ctx):
 def page_send(ctx):
     st.markdown('<div class="section-title">📧 Envoyer les Factures</div>', unsafe_allow_html=True)
 
-    data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-    if not data:
-        st.warning("⚠️ Aucune donnée extraite")
-        return
 
     gmail_config = secrets.get("gmail", {}) if secrets else {}
     if not gmail_config.get("email") or not gmail_config.get("app_password"):
@@ -1283,6 +1312,9 @@ def page_send(ctx):
             st.rerun()
         return
 
+    # ===========================
+    # SÉLECTION DU DOSSIER DE FACTURES (fonctionne SANS extraction)
+    # ===========================
     mode_send, selected_folder = _render_invoice_folder_selector("invoice_folder_mode_send", "invoice_folder_select_send", default_to_latest=False)
     if mode_send != "Utiliser un dossier existant":
         st.warning("⚠️ Sélectionnez un dossier existant pour envoyer des factures.")
@@ -1297,6 +1329,27 @@ def page_send(ctx):
         return
 
     st.info(f"📁 Dossier : **{selected_folder['month']}**")
+
+    # ===========================
+    # CHARGEMENT DES DONNÉES FAMILLES (emails) — optionnel
+    # ===========================
+    data = _try_load_data(ctx)
+
+    if not data:
+        st.warning("⚠️ **Données des familles non disponibles.** Les emails des parents sont nécessaires pour l'envoi.")
+        if st.button("📥 Charger les données depuis TutorBird / Google Drive", key="load_tb_data_send"):
+            with st.spinner("Chargement..."):
+                data = _try_load_data(ctx)
+                if data:
+                    st.success(f"✅ {len(data)} famille(s) chargées")
+                    st.rerun()
+                else:
+                    st.error("❌ Aucune donnée trouvée. Lancez d'abord une extraction TutorBird.")
+        return
+
+    # ===========================
+    # DIAGNOSTICS ET ENVOI
+    # ===========================
     month_name, year = ctx["get_month_year_from_folder"]({
         "name": selected_folder["month"],
         "date": _parse_invoice_folder_dt(selected_folder['month'])
@@ -1431,18 +1484,100 @@ def page_send(ctx):
 def page_reminders(ctx):
     st.markdown('<div class="section-title">🔔 Rappels de Paiement</div>', unsafe_allow_html=True)
     
-    data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-    latest = ctx["get_latest_invoice_folder"]()
     
-    st.info("Envoie des rappels aux familles n'ayant pas encore payé (basé sur Notion).")
+    if not secrets:
+        st.error("❌ Fichier secrets.yaml non trouvé !")
+        return
+    
+    gmail_config = secrets.get("gmail", {})
+    if not gmail_config.get("email") or not gmail_config.get("app_password"):
+        st.error("❌ Configuration email manquante. Allez dans Paramètres > Email pour configurer.")
+        if st.button("⚙️ Aller aux paramètres", key="goto_config_reminder"):
+            st.session_state.current_page = "config"
+            st.rerun()
+        return
+    
+    st.info("Envoie des rappels aux familles n'ayant pas encore payé (basé sur la base Notion Paiements).")
     
     # Alerte le 11
     if should_send_automatic_reminder():
         st.warning("🔔 **C'est le 11 du mois !** C'est le bon moment pour envoyer les rappels.")
     
-    # Template
-    month_name, year = ctx["get_month_year_from_folder"](latest) if latest else (ctx["MONTHS_FR"][datetime.now().month - 1], datetime.now().year)
+    # ===========================
+    # ÉTAPE 1 : CHARGER LES IMPAYÉS DEPUIS NOTION
+    # ===========================
+    st.markdown("### 📋 Étape 1 — Familles non payées (Notion)")
+    
+    if st.button("🔍 Charger les familles non payées depuis Notion", width="stretch", key="load_unpaid_notion"):
+        with st.spinner("Chargement depuis Notion..."):
+            result = get_unpaid_families_from_notion(secrets)
+            if result["success"]:
+                st.session_state.unpaid_families = result["unpaid"]
+                st.success(f"✅ {len(result['unpaid'])} famille(s) avec paiement en attente")
+            else:
+                st.error(f"❌ Erreur : {result['error']}")
+    
+    unpaid = st.session_state.get("unpaid_families", [])
+    
+    if not unpaid:
+        st.info("Cliquez sur le bouton ci-dessus pour charger les impayés.")
+        return
+    
+    # ===========================
+    # VÉRIFICATION DES EMAILS
+    # ===========================
+    with_email = [f for f in unpaid if f.get("parent_email")]
+    without_email = [f for f in unpaid if not f.get("parent_email")]
+    
+    st.info(f"📊 **{len(unpaid)}** famille(s) non payée(s) — **{len(with_email)}** avec email, **{len(without_email)}** sans email")
+    
+    if without_email:
+        with st.expander(f"⚠️ {len(without_email)} famille(s) SANS email — ne recevront pas de rappel", expanded=True):
+            for f in without_email:
+                st.write(f"• **{f['parent_name']}** — {f.get('amount', 0):.2f} CHF — ❌ Email manquant")
+    
+    if with_email:
+        with st.expander(f"✅ {len(with_email)} famille(s) avec email", expanded=False):
+            for f in with_email:
+                st.write(f"• **{f['parent_name']}** — {f.get('amount', 0):.2f} CHF — 📧 {f['parent_email']}")
+    
+    st.markdown("---")
+    
+    # ===========================
+    # ÉTAPE 2 : SÉLECTION DU DOSSIER DE FACTURES (depuis Drive)
+    # ===========================
+    st.markdown("### 📁 Étape 2 — Dossier de factures (pour joindre les PDFs)")
+    
+    mode_rem, selected_folder_rem = _render_invoice_folder_selector(
+        "invoice_folder_mode_reminder", "invoice_folder_select_reminder", default_to_latest=False
+    )
+    
+    folder_path = None
+    if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
+        folder_path = _ensure_local_invoice_folder(selected_folder_rem)
+        if not folder_path:
+            st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
+    elif mode_rem != "Utiliser un dossier existant":
+        st.warning("⚠️ Sélectionnez un dossier existant pour joindre les factures aux rappels.")
+    
+    st.markdown("---")
+    
+    # ===========================
+    # ÉTAPE 3 : TEMPLATE + OPTIONS
+    # ===========================
+    st.markdown("### ✉️ Étape 3 — Message de rappel")
+    
+    # Déduire mois/année depuis le dossier ou la date courante
+    if selected_folder_rem:
+        month_name, year = ctx["get_month_year_from_folder"]({
+            "name": selected_folder_rem["month"],
+            "date": _parse_invoice_folder_dt(selected_folder_rem["month"])
+        })
+    else:
+        month_name = ctx["MONTHS_FR"][datetime.now().month - 1]
+        year = datetime.now().year
+    
     template = get_default_reminder_template(month_name, year)
     
     subject = st.text_input("📝 Sujet", value=template["subject"], key="reminder_subject")
@@ -1450,32 +1585,32 @@ def page_reminders(ctx):
     
     st.markdown("---")
     
-    # Options
+    # Sélection des familles
+    st.markdown("### 📬 Étape 4 — Envoi")
+    
     col1, col2 = st.columns(2)
     with col1:
+        send_mode = st.radio("Envoyer à :", ["Toutes les familles non payées", "Sélection personnalisée"], key="reminder_send_mode")
+    with col2:
         send_test = st.checkbox("📧 Envoyer d'abord à moi-même (test)", value=True, key="reminder_test")
     
-    # Charger les impayés
-    if st.button("🔍 Voir les familles non payées", width="stretch"):
-        result = get_unpaid_families_from_notion(secrets)
-        if result["success"]:
-            unpaid = result["unpaid"]
-            st.session_state.unpaid_families = unpaid
-            st.info(f"📊 {len(unpaid)} famille(s) avec paiement en attente")
-        else:
-            st.error(f"❌ Erreur : {result['error']}")
+    selected_names = None
+    if send_mode == "Sélection personnalisée":
+        family_options = [f["parent_name"] for f in with_email]
+        selected_names = st.multiselect("Sélectionner les familles", family_options, key="reminder_select_families")
     
-    if st.session_state.get("unpaid_families"):
-        unpaid = st.session_state.unpaid_families
-        with st.expander(f"📋 {len(unpaid)} famille(s) non payée(s)", expanded=True):
-            for f in unpaid:
-                st.write(f"• **{f['parent_name']}** — {f['amount']:.2f} CHF")
+    # Charger les données TutorBird pour le matching des factures PDF
+    data = _try_load_data(ctx)
+    if not data:
+        st.caption("💡 Les données TutorBird ne sont pas chargées. Les factures PDF ne seront pas jointes automatiquement.")
     
+    # ===========================
+    # ENVOI TEST
+    # ===========================
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch", key="send_reminder_test"):
-            if not latest:
-                st.error("❌ Aucun dossier de factures")
-                return
+            if not folder_path:
+                st.warning("⚠️ Aucun dossier de factures sélectionné — le rappel sera envoyé sans pièce jointe.")
             
             progress = st.progress(0)
             status = st.empty()
@@ -1485,19 +1620,26 @@ def page_reminders(ctx):
                 status.info(m)
             
             result = run_send_reminders(
-                secrets, data, latest["path"], ctx["DATA_DIR"],
+                secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
                 custom_subject=subject, custom_body=body,
+                selected_families=selected_names,
                 send_to_test=True, callback=callback
             )
             
             if result["success"]:
-                st.success(f"✅ Test envoyé")
+                st.success(f"✅ Test envoyé à {gmail_config['email']} ({result.get('sent', 0)} rappel(s))")
             else:
-                st.error(f"❌ Erreur : {result['error']}")
+                st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
     
-    if st.button("📧 Envoyer les rappels", type="primary", width="stretch"):
-        if not latest:
-            st.error("❌ Aucun dossier de factures")
+    # ===========================
+    # ENVOI RÉEL
+    # ===========================
+    if st.button("📧 Envoyer les rappels", type="primary", width="stretch", key="send_reminders_real"):
+        if not folder_path:
+            st.warning("⚠️ Aucun dossier de factures sélectionné — les rappels seront envoyés sans pièce jointe.")
+        
+        if not with_email:
+            st.error("❌ Aucune famille avec email à relancer.")
             return
         
         progress = st.progress(0)
@@ -1508,15 +1650,40 @@ def page_reminders(ctx):
             status.info(m)
         
         result = run_send_reminders(
-            secrets, data, latest["path"], ctx["DATA_DIR"],
+            secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
             custom_subject=subject, custom_body=body,
+            selected_families=selected_names,
             send_to_test=False, callback=callback
         )
         
         if result["success"]:
-            st.success(f"✅ **{result['sent']}** rappels envoyés")
+            sent = result.get("sent", 0)
+            total = result.get("total", 0)
+            errors = result.get("errors", [])
+            
+            if errors:
+                st.warning(f"⚠️ **{sent}/{total}** rappels envoyés — **{len(errors)}** erreur(s)")
+            else:
+                st.success(f"✅ **{sent}/{total}** rappels envoyés avec succès !")
+            
+            # Rapport détaillé
+            if sent > 0:
+                families_sent = selected_names if selected_names else [f["parent_name"] for f in with_email]
+                with st.expander(f"✅ {sent} email(s) envoyé(s)"):
+                    for name in families_sent[:sent]:
+                        st.write(f"• ✅ **{name}**")
+            
+            if errors:
+                with st.expander(f"❌ {len(errors)} erreur(s) d'envoi"):
+                    for err in errors:
+                        st.write(f"• {err}")
+            
+            if without_email:
+                with st.expander(f"⚠️ {len(without_email)} famille(s) sans email — non contactée(s)"):
+                    for f in without_email:
+                        st.write(f"• **{f['parent_name']}** — email manquant")
         else:
-            st.error(f"❌ Erreur : {result['error']}")
+            st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
 
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)

@@ -116,7 +116,7 @@ def get_unpaid_families_from_notion(secrets, callback=None):
         while True:
             payload = {
                 "filter": {
-                    "property": "Payé",
+                    "property": "Payé ?",
                     "checkbox": {"equals": False}
                 }
             }

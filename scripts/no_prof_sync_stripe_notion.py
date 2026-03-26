@@ -189,7 +189,7 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 famille = famille_prop["title"][0]["plain_text"] if famille_prop["title"] else ""
             
             montant = p.get("Montant total dû", {}).get("number", 0) or 0
-            paid = p.get("Payé", {}).get("checkbox", False)
+            paid = p.get("Payé ?", {}).get("checkbox", False)
             
             if famille:
                 notion_rows.append({
@@ -237,7 +237,7 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 # Marquer comme payé
                 result = notion_request("PATCH", f"pages/{found_unpaid['page_id']}", {
                     "properties": {
-                        "Payé": {"checkbox": True},
+                        "Payé ?": {"checkbox": True},
                         "Date des paiements": {"date": {"start": sp["date_payment"]}},
                     }
                 })
