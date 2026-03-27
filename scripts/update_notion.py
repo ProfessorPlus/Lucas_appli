@@ -366,16 +366,26 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         added = 0
         skipped = 0
         pages_created = 0
+        no_lessons = 0
+        api_failed = 0
+        no_name = 0
         total = len(data)
         current = 0
+        
+        print(f"🔍 DEBUG: {total} familles dans data")
         
         for fam_id, fam in data.items():
             current += 1
             progress = int(20 + (current / total * 60))
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
-            parent_email = fam.get("parent_email") or ""
+            parent_email = fam.get("parent_email") or fam.get("email_client") or ""
             total_amount = fam.get("total_courses", 0)
+            
+            if not parent_name:
+                no_name += 1
+                print(f"  ⚠️ Famille {fam_id}: pas de nom → skip")
+                continue
             
             # Vérifier doublon
             key = (parent_name.lower(), round(total_amount, 2))
@@ -391,10 +401,17 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
             
             if not lessons_filtered:
+                no_lessons += 1
+                print(f"  ⚠️ Famille {parent_name}: {len(lessons)} leçons brutes, 0 après filtrage → skip")
                 continue
             
             # Calculer le total des heures
             total_hours = sum((L.get("duration_min") or 0) / 60 for L in lessons_filtered)
+            
+            # Si total_amount est 0, recalculer depuis les leçons
+            if total_amount <= 0:
+                total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
+                print(f"  ℹ️ {parent_name}: total_courses=0, recalculé={total_amount:.2f}")
             
             # Trouver la date du premier cours
             dates = [L.get("date") for L in lessons_filtered if L.get("date")]
@@ -412,15 +429,20 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             # Créer la page dans la DB Paiements
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
-                "Email parent": {"email": parent_email} if parent_email else {"email": None},
                 "Montant total dû": {"number": round(total_amount, 2)},
                 "Heures": {"rich_text": [{"text": {"content": f"{total_hours:.1f}h"}}]},
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
             
+            # Email parent : seulement si non vide (évite erreur type Notion)
+            if parent_email and parent_email.strip():
+                properties["Email parent"] = {"email": parent_email.strip()}
+            
             if date_iso:
                 properties["Date cours factures"] = {"date": {"start": date_iso}}
+            
+            print(f"  📤 Envoi Notion: {parent_name} | {total_amount:.2f} | {total_hours:.1f}h | id={next_id}")
             
             result = notion_request("POST", "pages", {
                 "parent": {"database_id": DB_PAIEMENTS},
@@ -431,6 +453,9 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 added += 1
                 next_id += 1
                 existing_keys.add(key)
+            else:
+                api_failed += 1
+                print(f"  ❌ ÉCHEC API pour {parent_name}")
                 
                 # ===========================
                 # CRÉER LES SOUS-PAGES PROFS (sauf en mode no-split)
@@ -522,12 +547,18 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         
         update(100, "✅ Terminé !")
         
+        print(f"📊 RÉSULTAT: added={added}, skipped={skipped}, no_lessons={no_lessons}, api_failed={api_failed}, no_name={no_name}, total={total}")
+        
         return {
             "success": True,
             "added": added,
             "skipped": skipped,
             "pages_created": pages_created,
-            "next_id": next_id
+            "next_id": next_id,
+            "no_lessons": no_lessons,
+            "api_failed": api_failed,
+            "no_name": no_name,
+            "total_families": total,
         }
         
     except Exception as e:
@@ -778,10 +809,8 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
                 "id paiements": {"number": next_id},
             }
 
-            if row.get("parent_email"):
-                properties["Email parent"] = {"email": row["parent_email"]}
-            else:
-                properties["Email parent"] = {"email": None}
+            if row.get("parent_email") and row["parent_email"].strip():
+                properties["Email parent"] = {"email": row["parent_email"].strip()}
 
             if row.get("hours") is not None:
                 properties["Heures"] = {"rich_text": [{"text": {"content": f"{float(row['hours']):.1f}h"}}]}
