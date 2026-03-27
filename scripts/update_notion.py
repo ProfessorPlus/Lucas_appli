@@ -1838,10 +1838,6 @@ def run_add_missing_rows(secrets, data, missing_rows, callback=None):
                     hours_str = f"{hours:.1f}h".replace(".0h", "h")
                 properties["Heures"] = {"rich_text": [{"text": {"content": hours_str}}]}
             
-            # Lien payment link Stripe (url)
-            if row.get("stripe_link"):
-                properties["Lien payment link Stripe"] = {"url": row["stripe_link"]}
-            
             # Date cours factures (date)
             if row.get("date_cours"):
                 properties["Date cours factures"] = {"date": {"start": row["date_cours"]}}
