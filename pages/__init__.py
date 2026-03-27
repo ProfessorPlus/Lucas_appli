@@ -1908,7 +1908,6 @@ def page_update(ctx):
             result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split)
             if result["success"]:
                 added = result.get('added', 0)
-                skipped_dup = result.get('skipped', 0)
                 no_lessons = result.get('no_lessons', 0)
                 api_failed = result.get('api_failed', 0)
                 total_fam = result.get('total_families', 0)
@@ -1916,25 +1915,22 @@ def page_update(ctx):
                 if added > 0:
                     st.success(f"""
                     ✅ **Ajout terminé**
-                    - {added} ligne(s) ajoutée(s)
-                    - {skipped_dup} ignorée(s) (doublons)
+                    - {added} ligne(s) ajoutée(s) sur {total_fam} familles
                     - {result.get('pages_created', 0)} sous-page(s) prof créée(s)
                     """)
+                    if api_failed > 0:
+                        st.warning(f"⚠️ {api_failed} famille(s) n'ont pas pu être ajoutée(s) — voir les logs.")
+                    if no_lessons > 0:
+                        st.caption(f"ℹ️ {no_lessons} famille(s) ignorée(s) car aucune leçon après filtrage des absences.")
                 else:
                     st.warning(f"""
                     ⚠️ **Aucune ligne ajoutée** — Diagnostic détaillé :
                     - 📊 **{total_fam}** familles dans les données
-                    - ⏭️ **{skipped_dup}** ignorée(s) car doublon (déjà dans Notion)
                     - 📭 **{no_lessons}** famille(s) sans leçon après filtrage des absences
                     - ❌ **{api_failed}** échec(s) API Notion
-                    - 🔢 Reste non comptabilisé : **{total_fam - skipped_dup - no_lessons - api_failed - added}**
                     """)
                     if api_failed > 0:
                         st.error("💡 Des appels API Notion ont échoué. Vérifiez les logs Streamlit pour voir les détails d'erreur.")
-                    if no_lessons > 0:
-                        st.info("💡 Certaines familles n'ont aucune leçon (ou toutes marquées AbsentNotice). C'est normal si ce sont des familles sans cours ce mois-ci.")
-                    if skipped_dup == total_fam:
-                        st.info("💡 Toutes les familles sont déjà dans Notion ! Si vous voulez re-créer les lignes, supprimez d'abord les anciennes via **Nettoyage Notion**.")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
     

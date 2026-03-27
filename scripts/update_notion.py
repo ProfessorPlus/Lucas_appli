@@ -305,31 +305,14 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             return title
         
         # ===========================
-        # ÉTAPE 1: Vérifier les doublons dans la DB
+        # ÉTAPE 1: Récupérer les lignes existantes (pour calculer le prochain ID)
         # ===========================
-        update(5, "🔍 Vérification des doublons...")
+        update(5, "🔍 Récupération des lignes existantes...")
         
         existing = notion_request("POST", f"databases/{DB_PAIEMENTS}/query", {
             "sorts": [{"property": "id paiements", "direction": "descending"}],
             "page_size": 100
         })
-        
-        existing_keys = set()
-        if existing:
-            for row in existing.get("results", []):
-                props = row["properties"]
-                
-                famille = ""
-                montant = 0
-                
-                famille_prop = props.get("Famille", {})
-                if famille_prop.get("title"):
-                    famille = famille_prop["title"][0]["plain_text"] if famille_prop["title"] else ""
-                
-                montant = props.get("Montant dû Famille/Prof", {}).get("number", 0) or props.get("Montant total dû", {}).get("number", 0)
-                
-                if famille and montant:
-                    existing_keys.add((famille.lower(), round(montant, 2)))
         
         # ===========================
         # ÉTAPE 2: Obtenir le prochain ID
@@ -339,7 +322,16 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         metadata_db = secrets["notion"].get("metadata_database_id")
         next_id = 1
         
-        if metadata_db:
+        # D'abord chercher le max id dans les lignes existantes (plus fiable)
+        if existing:
+            for row in existing.get("results", []):
+                props = row["properties"]
+                pid = props.get("id paiements", {}).get("number", 0) or 0
+                if pid >= next_id:
+                    next_id = pid + 1
+        
+        # Fallback: metadata DB
+        if next_id <= 1 and metadata_db:
             meta = notion_request("POST", f"databases/{metadata_db}/query", {})
             if meta:
                 for row in meta.get("results", []):
@@ -348,6 +340,8 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                     if cle and cle[0].get("plain_text", "").strip() == "last_payment_id":
                         next_id = props.get("Valeur", {}).get("number", 0) + 1
                         break
+        
+        print(f"🔍 DEBUG: next_id = {next_id}")
         
         # ===========================
         # ÉTAPE 3: Charger les pages profs existantes
@@ -387,12 +381,6 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 print(f"  ⚠️ Famille {fam_id}: pas de nom → skip")
                 continue
             
-            # Vérifier doublon
-            key = (parent_name.lower(), round(total_amount, 2))
-            if key in existing_keys:
-                skipped += 1
-                continue
-            
             update(progress, f"➕ {parent_name}")
             
             lessons = fam.get("lessons", [])
@@ -427,6 +415,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                     pass
             
             # Créer la page dans la DB Paiements
+            # NOTE: Pas de "Email parent" — cette colonne n'existe pas dans la DB Notion
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
                 "Montant dû Famille/Prof": {"number": round(total_amount, 2)},
@@ -434,10 +423,6 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
-            
-            # Email parent : seulement si non vide (évite erreur type Notion)
-            if parent_email and parent_email.strip():
-                properties["Email parent"] = {"email": parent_email.strip()}
             
             if date_iso:
                 properties["Date cours factures"] = {"date": {"start": date_iso}}
@@ -452,10 +437,6 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             if result:
                 added += 1
                 next_id += 1
-                existing_keys.add(key)
-            else:
-                api_failed += 1
-                print(f"  ❌ ÉCHEC API pour {parent_name}")
                 
                 # ===========================
                 # CRÉER LES SOUS-PAGES PROFS (sauf en mode no-split)
@@ -520,6 +501,9 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                             if current_title is None:  # Page nouvellement créée
                                 update_student_page(student_id, student_name, payments)
                                 pages_created += 1
+            else:
+                api_failed += 1
+                print(f"  ❌ ÉCHEC API pour {parent_name}")
         
         # ===========================
         # ÉTAPE 5: Mettre à jour le dashboard
@@ -808,9 +792,6 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
-
-            if row.get("parent_email") and row["parent_email"].strip():
-                properties["Email parent"] = {"email": row["parent_email"].strip()}
 
             if row.get("hours") is not None:
                 properties["Heures"] = {"rich_text": [{"text": {"content": f"{float(row['hours']):.1f}h"}}]}
