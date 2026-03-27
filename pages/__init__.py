@@ -1885,8 +1885,6 @@ def page_update(ctx):
             2. **Ne pas créer les sous-pages profs** {reason}
             
             📁 Dossier : **{folder_name_t1}**
-            
-            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
             """)
         else:
             st.info(f"""
@@ -1895,8 +1893,6 @@ def page_update(ctx):
             2. Créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)
             
             📁 Dossier : **{folder_name_t1}**
-            
-            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
             """)
         
         if st.button("📤 Ajouter les lignes", type="primary", width="stretch", key="add_all_notion"):
