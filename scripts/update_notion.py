@@ -445,6 +445,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
                 "Montant dû Famille/Prof": {"number": round(total_amount, 2)},
+                "Montant total dû": {"number": round(total_amount, 2)},
                 "Heures": {"rich_text": [{"text": {"content": f"{total_hours:.1f}h"}}]},
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
@@ -461,6 +462,9 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             # Devise (rich_text)
             if currency:
                 properties["Devise"] = {"rich_text": [{"text": {"content": currency}}]}
+
+            if parent_email:
+                properties["Email parent"] = {"email": parent_email}
             
             # Année (number)
             if year_value:
@@ -831,12 +835,19 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
             properties = {
                 "Famille": {"title": [{"text": {"content": family_name}}]},
                 "Montant dû Famille/Prof": {"number": amount},
+                "Montant total dû": {"number": amount},
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
 
             if row.get("hours") is not None:
                 properties["Heures"] = {"rich_text": [{"text": {"content": f"{float(row['hours']):.1f}h"}}]}
+
+            if row.get("parent_email"):
+                properties["Email parent"] = {"email": row["parent_email"]}
+
+            if row.get("currency"):
+                properties["Devise"] = {"rich_text": [{"text": {"content": row["currency"]}}]}
 
             if row.get("invoice_date"):
                 properties["Date cours factures"] = {"date": {"start": row["invoice_date"]}}
