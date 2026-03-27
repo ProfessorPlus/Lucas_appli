@@ -13,7 +13,7 @@ import calendar
 
 # Import des scripts
 from scripts.extract_tutorbird import run_extraction
-from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows, run_add_notion_rows_from_invoice_folder_no_split
+from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
 from scripts.generate_invoices import run_generate_invoices
 from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics
@@ -1687,474 +1687,453 @@ def page_reminders(ctx):
 
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)
-
+    
     st.info("""
     **À quoi sert cette synchronisation ?**
-
-    Cette version fonctionne **uniquement en mode no-split**.
-
-    Elle récupère les paiements Stripe sur le compte principal puis :
-    1. Marque automatiquement les lignes comme **"Payé"** dans Notion
-    2. Renseigne la **date du paiement**
-    3. Met à jour le **dashboard global / récapitulatif paiements**
-
-    **Aucune mise à jour des pages professeurs n'est faite ici.**
-
-    **Matching par :** Famille + Montant
+    
+    Cette fonction récupère les paiements effectués sur Stripe et :
+    1. Marque automatiquement les lignes comme "Payé" dans Notion
+    2. Met à jour les tableaux dans les pages des professeurs
+    3. Met à jour les récapitulatifs de paiements
+    4. Met à jour le dashboard global
+    
+    **Matching par :** Prof + Élève + Montant (via extraction du reçu Stripe)
     """)
-
+    
     secrets = ctx["load_secrets"]()
-    secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
-
-    if not secrets:
-        st.error("❌ secrets.yaml non trouvé !")
-        return
-    if not secrets_no_prof:
-        st.error("❌ secrets_no_prof.yaml non trouvé !")
-        return
-
-    def _parse_folder_datetime(folder):
-        if not folder:
-            return None
-        month_value = folder.get("month") or folder.get("name") or ""
-        date_part = month_value.split(" - ")[-1].strip()
-        for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
-            try:
-                return datetime.strptime(date_part, fmt)
-            except Exception:
-                pass
-        return None
-
-    def _folder_label(folder):
-        month_value = folder.get("month") or folder.get("name") or "Dossier inconnu"
-        source = folder.get("source", "local")
-        source_label = {
-            "drive": "Drive",
-            "local": "Local",
-            "both": "Local + Drive",
-        }.get(source, source)
-        return f"{month_value} · {source_label}"
-
-    available_folders = list_invoice_folders() or []
-    available_folders = [f for f in available_folders if _parse_folder_datetime(f) is not None]
-
-    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True, key="sync_use_latest")
-
-    since_date = None
-    selected_folder = None
-
-    if use_latest and available_folders:
-        folder_labels = [_folder_label(f) for f in available_folders]
-        selected_label = st.selectbox(
-            "Choisir un dossier",
-            options=folder_labels,
-            index=0,
-            key="sync_selected_invoice_folder",
-        )
-        selected_folder = available_folders[folder_labels.index(selected_label)]
-        since_date = _parse_folder_datetime(selected_folder)
-
-        source = selected_folder.get("source", "local")
-        source_label = {
-            "drive": "Drive",
-            "local": "Local",
-            "both": "Local + Drive",
-        }.get(source, source)
-        st.info(f"📁 Dossier sélectionné : **{selected_folder.get('month', selected_folder.get('name', '—'))}** ({source_label})")
-
-    elif use_latest and not available_folders:
-        st.warning("⚠️ Aucun dossier de factures disponible. Sélection manuelle de la date utilisée à la place.")
-
-    if since_date is None:
-        manual_date = st.date_input("📅 Depuis la date", key="sync_manual_since_date")
-        since_date = datetime.combine(manual_date, time(0, 0))
-
-    if st.button("🔄 Synchroniser", type="primary", width="stretch", key="sync_run_button"):
+    latest = ctx["get_latest_invoice_folder"]()
+    
+    # Détecter le mode no-split
+    is_no_split = st.session_state.get("no_split_mode_active", False)
+    
+    if is_no_split:
+        st.info("🏦 **Mode sans transfert détecté** — Sync simplifiée (famille + montant, pas de pages profs)")
+    
+    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True)
+    
+    if use_latest and latest:
+        since_date = latest["date"]
+        st.info(f"📅 Depuis : {since_date.strftime('%d/%m/%Y')}")
+    else:
+        since_date = st.date_input("📅 Depuis la date")
+        since_date = datetime.combine(since_date, time(0, 0))
+    
+    if st.button("🔄 Synchroniser", type="primary", width="stretch"):
         progress = st.progress(0)
         status = st.empty()
-
-        def callback_ns(p, m):
-            progress.progress(max(0, min(int(p), 100)))
-            status.info(m)
-
-        result = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
-
-        progress.progress(100)
-        status.empty()
-
-        if result.get("success"):
-            st.success(f"""
-            ✅ **Synchronisation no-split terminée**
-
-            - {result.get('synced', 0)} paiement(s) synchronisé(s)
-            - {result.get('already_paid', 0)} déjà marqué(s) payé(s)
-            - {result.get('total_not_found', 0)} non trouvé(s) dans Notion
+        
+        if is_no_split:
+            # ===========================
+            # MODE NO-SPLIT : sync simplifiée
+            # ===========================
+            def callback_ns(p, m):
+                progress.progress(p)
+                status.info(m)
+            
+            secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
+            if not secrets_no_prof:
+                st.error("❌ secrets_no_prof.yaml non trouvé !")
+                return
+            
+            result1 = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
+            
+            progress.progress(100)
+            status.empty()
+            
+            if result1["success"]:
+                st.success(f"""
+                ✅ **Synchronisation no-split terminée**
+                
+                - {result1['synced']} paiement(s) synchronisé(s)
+                - {result1['already_paid']} déjà marqué(s) payé(s)
+                - {result1['total_not_found']} non trouvé(s) dans Notion
+                """)
+                
+                if result1.get("not_found"):
+                    with st.expander("⚠️ Paiements non trouvés dans Notion"):
+                        for nf in result1["not_found"]:
+                            st.write(f"• {nf}")
+            else:
+                st.error(f"❌ Erreur : {result1['error']}")
+        
+        else:
+            # ===========================
+            # MODE NORMAL : sync avec pages profs
+            # ===========================
+            def callback1(p, m):
+                progress.progress(int(p * 0.5))
+                status.info(f"[1/2] {m}")
+            
+            from scripts.sync_stripe_notion import run_sync_stripe_notion
+            result1 = run_sync_stripe_notion(secrets, since_date, callback1)
+            
+            if not result1["success"]:
+                st.error(f"❌ Erreur sync Stripe : {result1['error']}")
+                return
+            
+            # ===========================
+            # ÉTAPE 2: Mise à jour des pages profs
+            # ===========================
+            def callback2(p, m):
+                progress.progress(50 + int(p * 0.5))
+                status.info(f"[2/2] {m}")
+            
+            from scripts.update_notion_prof_pages import run_update_notion_prof_pages
+            result2 = run_update_notion_prof_pages(secrets, callback2, force=False, latest_only=False)
+            
+            progress.progress(100)
+            status.empty()
+            
+            # ===========================
+            # Affichage des résultats
+            # ===========================
+            if result1["success"] and result2["success"]:
+                st.success(f"""
+                ✅ **Synchronisation terminée**
+                
+                **Stripe → Notion :**
+                - {result1['synced']} paiement(s) synchronisé(s)
+                - {result1['already_paid']} déjà marqué(s) payé(s)
+                - {result1.get('student_unknown', 0)} élève(s) inconnu(s) (reçu vide)
+                - {result1['total_not_found']} non trouvé(s) dans Notion
+                
+                **Pages professeurs :**
+                - {result2['updated']} page(s) mise(s) à jour
+                - {result2['skipped']} page(s) déjà à jour
+                - {result2['recaps_updated']} récap(s) mis à jour
+                """)
+                
+                if result1.get("not_found"):
+                    with st.expander("⚠️ Paiements non trouvés dans Notion"):
+                        for nf in result1["not_found"]:
+                            st.write(f"• {nf}")
+            
+            elif result2 and not result2["success"]:
+                st.warning(f"""
+                ⚠️ **Sync Stripe OK, mais erreur pages profs**
+            
+            **Stripe → Notion :**
+            - {result1['synced']} paiement(s) synchronisé(s)
+            
+            **Erreur pages profs :**
+            {result2['error']}
             """)
 
-            if result.get("not_found"):
-                with st.expander("⚠️ Paiements non trouvés dans Notion"):
-                    for nf in result["not_found"]:
-                        st.write(f"• {nf}")
-        else:
-            st.error(f"❌ Erreur sync Stripe no-split : {result.get('error', 'Erreur inconnue')}")
+"""
+Nouvelle version de page_update avec 3 onglets :
+1. Ajouter toutes les lignes
+2. Mettre à jour certaines lignes  
+3. Vérifier & Compléter (NOUVEAU)
+"""
 
 def page_update(ctx):
     st.markdown('<div class="section-title">📤 Ajouter lignes Notion</div>', unsafe_allow_html=True)
-
-    data = _try_load_data(ctx)
+    
+    data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-
-    if not secrets:
-        st.error("❌ secrets.yaml non trouvé !")
+    latest = ctx["get_latest_invoice_folder"]()
+    
+    if not data:
+        st.warning("⚠️ Aucune donnée extraite")
         return
-
+    
     # Détecter le mode no-split
     is_no_split = st.session_state.get("no_split_mode_active", False)
 
     if is_no_split:
-        st.info("🏦 **Mode sans transfert actif** — Cette page ajoute uniquement les lignes famille / montant compatibles avec la sync Stripe no-split.")
-
-    def _parse_folder_datetime(folder):
-        if not folder:
-            return None
-        month_value = folder.get("month") or folder.get("name") or ""
-        date_part = month_value.split(" - ")[-1].strip()
-        for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
-            try:
-                return datetime.strptime(date_part, fmt)
-            except Exception:
-                pass
-        return None
-
-    def _folder_label(folder):
-        month_value = folder.get("month") or folder.get("name") or "Dossier inconnu"
-        source = folder.get("source", "local")
-        source_label = {
-            "drive": "Drive",
-            "local": "Local",
-            "both": "Local + Drive",
-        }.get(source, source)
-        return f"{month_value} · {source_label}"
-
-    def _ensure_local_invoice_folder(folder):
-        if not folder:
-            return None
-        if folder.get("path") and os.path.exists(folder["path"]):
-            return folder["path"]
-        loaded = load_invoice_folder(folder["year"], folder["month"])
-        if loaded.get("success"):
-            return loaded.get("local_path")
-        return None
-
-    available_folders = list_invoice_folders() or []
-    available_folders = [f for f in available_folders if _parse_folder_datetime(f) is not None]
-
-    use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True, key="update_use_latest")
-
-    selected_folder = None
-    selected_folder_path = None
-
-    if use_latest and available_folders:
-        folder_labels = [_folder_label(f) for f in available_folders]
-        selected_label = st.selectbox(
-            "Choisir un dossier",
-            options=folder_labels,
-            index=0,
-            key="update_folder_select",
+        st.info("🏦 **Mode sans transfert actif** — Les lignes seront ajoutées sans colonne prof et sans sous-pages profs.")
+        skip_prof_subpages = True
+        st.checkbox(
+            "🚫 Ne pas créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)",
+            value=True,
+            disabled=True,
+            key="skip_prof_subpages_update_locked"
         )
-        selected_folder = next((f for f, label in zip(available_folders, folder_labels) if label == selected_label), available_folders[0])
-        selected_folder_path = _ensure_local_invoice_folder(selected_folder)
-        source = selected_folder.get("source", "local")
-        source_label = {"drive": "Drive", "local": "Local", "both": "Local + Drive"}.get(source, source)
-        st.info(f"📁 Dossier sélectionné : **{selected_folder.get('month', selected_folder.get('name', '—'))}** ({source_label})")
-    elif use_latest and not available_folders:
-        st.warning("⚠️ Aucun dossier de factures disponible pour le moment.")
+    else:
+        skip_prof_subpages = st.checkbox(
+            "🚫 Ne pas créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)",
+            value=True,
+            key="skip_prof_subpages_update"
+        )
 
-    if not data:
-        st.warning("⚠️ Données TutorBird non trouvées en local. J'utilise le dossier de factures pour le mode no-split quand c'est possible.")
-
+    effective_no_split = is_no_split or skip_prof_subpages
+    
     # Onglets
-    tab1, tab2, tab3 = st.tabs(["➕ Ajouter les lignes", "🔄 Mettre à jour certaines lignes", "🔍 Ajouter ligne(s) manquante(s)"])
-
+    default_tab = 1 if st.session_state.get("update_tab") == "selective" else 0
+    tab1, tab2, tab3 = st.tabs(["➕ Ajouter toutes les lignes", "🔄 Mettre à jour certaines lignes", "🔍 Ajouter ligne(s) manquante(s)"])
+    
     # ===========================
-    # TAB 1: Ajouter les lignes
+    # TAB 1: Ajouter toutes les lignes
     # ===========================
     with tab1:
-        if is_no_split:
-            st.info("""
-            **Mode no-split :**
-            1. Lecture du `payment_links_output.json` associé au dossier sélectionné
-            2. Agrégation par **famille**
-            3. Création des lignes Notion compatibles avec la **sync Stripe no-split**
-
-            ✅ Colonnes créées : **Famille**, **Montant total dû**, **Payé ?**, **Date cours factures**, **id paiements**
+        if effective_no_split:
+            reason = "(mode sans transfert)" if is_no_split else "(option cochée)"
+            st.info(f"""
+            **Cette action va :**
+            1. Ajouter **{len(data)}** lignes dans la base de données Paiements
+            2. **Ne pas créer les sous-pages profs** {reason}
+            
+            📁 Basé sur le dernier dossier : **{latest['name'] if latest else 'N/A'}**
+            
+            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
             """)
-
-            if selected_folder_path:
-                st.caption(f"Source utilisée : `{selected_folder_path}`")
-            else:
-                st.warning("⚠️ Sélectionne un dossier de factures disponible.")
-
-            if st.button("📤 Ajouter les lignes du dossier sélectionné", type="primary", width="stretch", key="add_notion_no_split_from_folder"):
-                if not selected_folder_path:
-                    st.error("❌ Aucun dossier de factures exploitable trouvé.")
-                else:
-                    progress = st.progress(0)
-                    status = st.empty()
-
-                    def callback(p, m):
-                        progress.progress(max(0, min(int(p), 100)))
-                        status.info(m)
-
-                    result = run_add_notion_rows_from_invoice_folder_no_split(
-                        secrets,
-                        data or {},
-                        selected_folder_path,
-                        callback,
-                        base_dir=ctx["BASE_DIR"],
-                    )
-
-                    if result.get("success"):
-                        st.success(f"""
-                        ✅ **Ajout no-split terminé**
-                        - {result.get('families_detected', 0)} famille(s) détectée(s)
-                        - {result.get('added', 0)} ligne(s) ajoutée(s)
-                        - {result.get('skipped', 0)} doublon(s) ignoré(s)
-                        """)
-                        if result.get("payment_links_source"):
-                            st.caption(f"payment_links_output utilisé : {result['payment_links_source']}")
-                    else:
-                        st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
         else:
-            if not data:
-                st.warning("⚠️ Aucune donnée extraite. Lance d'abord une extraction TutorBird ou recharge les données depuis Drive.")
-            else:
-                latest_name = selected_folder.get('month', selected_folder.get('name', 'N/A')) if selected_folder else 'N/A'
-                st.info(f"""
-                **Cette action va :**
-                1. Ajouter **{len(data)}** lignes dans la base de données Paiements
-                2. Créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)
-
-                📁 Basé sur le dossier affiché : **{latest_name}**
-
-                ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
+            st.info(f"""
+            **Cette action va :**
+            1. Ajouter **{len(data)}** lignes dans la base de données Paiements
+            2. Créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)
+            
+            📁 Basé sur le dernier dossier : **{latest['name'] if latest else 'N/A'}**
+            
+            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
+            """)
+        
+        if st.button("📤 Ajouter les lignes", type="primary", width="stretch", key="add_all_notion"):
+            progress = st.progress(0)
+            status = st.empty()
+            
+            def callback(p, m):
+                progress.progress(p)
+                status.info(m)
+            
+            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split)
+            
+            if result["success"]:
+                pages_line = (
+                    f"- {result['pages_created']} sous-page(s) prof créée(s)"
+                    if not effective_no_split
+                    else "- 0 sous-page prof créée (désactivé)"
+                )
+                st.success(f"""
+                ✅ **Mise à jour terminée**
+                - {result['added']} ligne(s) ajoutée(s)
+                - {result['skipped']} ligne(s) ignorée(s) (doublons)
+                {pages_line}
                 """)
-
-                if st.button("📤 Ajouter les lignes", type="primary", width="stretch", key="add_all_notion"):
-                    progress = st.progress(0)
-                    status = st.empty()
-
-                    def callback(p, m):
-                        progress.progress(p)
-                        status.info(m)
-
-                    result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=is_no_split)
-
-                    if result["success"]:
-                        st.success(f"""
-                        ✅ **Mise à jour terminée**
-                        - {result['added']} ligne(s) ajoutée(s)
-                        - {result['skipped']} ligne(s) ignorée(s) (doublons)
-                        - {result['pages_created']} sous-page(s) prof créée(s)
-                        """)
-                    else:
-                        st.error(f"❌ Erreur : {result['error']}")
-
+            else:
+                st.error(f"❌ Erreur : {result['error']}")
+    
     # ===========================
     # TAB 2: Mettre à jour certaines lignes
     # ===========================
     with tab2:
-        if is_no_split:
-            st.info("ℹ️ En mode no-split, cette section n'est pas nécessaire. Utilise l'onglet **Ajouter les lignes** puis fais la sync Stripe.")
-        elif not data:
-            st.warning("⚠️ Aucune donnée extraite disponible pour cette fonctionnalité.")
-        elif not selected_folder_path or not selected_folder:
-            st.error("❌ Aucun dossier de factures trouvé.")
+        st.markdown("### 🔄 Mettre à jour certaines lignes Notion")
+        
+        st.info("""
+        **Cette option permet de :**
+        - Remplacer les valeurs des lignes existantes pour certaines familles
+        - Mettre à jour les sous-pages des professeurs concernés
+        
+        ⚠️ Utilisez cette option après avoir régénéré des factures pour certains clients.
+        """)
+        
+        if latest:
+            st.warning(f"📁 Les modifications concerneront le dossier : **{latest['name']}**")
         else:
-            st.markdown("### 🔄 Mettre à jour certaines lignes Notion")
-
-            st.info("""
-            **Cette option permet de :**
-            - Remplacer les valeurs des lignes existantes pour certaines familles
-            - Mettre à jour les sous-pages des professeurs concernés
-
-            ⚠️ Utilisez cette option après avoir régénéré des factures pour certains clients.
-            """)
-
-            st.warning(f"📁 Les modifications concerneront le dossier : **{selected_folder['month']}**")
-
-            mode = st.radio(
-                "🔍 Mode de sélection :",
-                ["👨‍👩‍👧 Par famille", "👨‍🏫 Par professeur"],
-                horizontal=True,
-                key="update_selection_mode"
+            st.error("❌ Aucun dossier de factures trouvé.")
+            return
+        
+        # ===========================
+        # CHOIX DU MODE DE SÉLECTION
+        # ===========================
+        mode = st.radio(
+            "🔍 Mode de sélection :",
+            ["👨‍👩‍👧 Par famille", "👨‍🏫 Par professeur"],
+            horizontal=True,
+            key="update_selection_mode"
+        )
+        
+        st.markdown("---")
+        
+        selected_family_ids = []
+        selected_teachers = []
+        
+        # ===========================
+        # MODE PAR FAMILLE
+        # ===========================
+        if mode == "👨‍👩‍👧 Par famille":
+            # Pré-sélection si venant de la page factures
+            preselected = st.session_state.get("regenerated_invoices_families", [])
+            
+            # Liste des familles
+            family_list = [(fam_id, fam.get("parent_name", fam_id)) for fam_id, fam in data.items()]
+            family_names = [f"{name} ({fam_id})" for fam_id, name in family_list]
+            
+            # Pré-sélectionner
+            default_selection = []
+            for fam_id in preselected:
+                for fid, name in family_list:
+                    if fid == fam_id:
+                        default_selection.append(f"{name} ({fid})")
+            
+            selected_families_display = st.multiselect(
+                "📋 Sélectionnez les familles à mettre à jour",
+                family_names,
+                default=default_selection,
+                key="select_families_notion_update_mode1"
             )
-
-            st.markdown("---")
-
-            selected_family_ids = []
-            selected_teachers = []
-
-            if mode == "👨‍👩‍👧 Par famille":
-                preselected = st.session_state.get("regenerated_invoices_families", [])
-                family_list = [(fam_id, fam.get("parent_name", fam_id)) for fam_id, fam in data.items()]
-                family_names = [f"{name} ({fam_id})" for fam_id, name in family_list]
-
-                default_selection = []
-                for fam_id in preselected:
-                    for fid, name in family_list:
-                        if fid == fam_id:
-                            default_selection.append(f"{name} ({fid})")
-
-                selected_families_display = st.multiselect(
-                    "📋 Sélectionnez les familles à mettre à jour",
-                    family_names,
-                    default=default_selection,
-                    key="select_families_notion_update_mode1"
-                )
-
-                for sel in selected_families_display:
-                    for fam_id, name in family_list:
-                        if f"{name} ({fam_id})" == sel:
-                            selected_family_ids.append(fam_id)
-
-                if selected_family_ids:
-                    for fam_id in selected_family_ids:
-                        fam = data.get(fam_id, {})
-                        lessons = fam.get("lessons", [])
-                        for L in lessons:
-                            teacher = L.get("teacher", "")
-                            if teacher and teacher not in selected_teachers:
-                                selected_teachers.append(teacher)
-
-                    st.info(f"📊 **{len(selected_family_ids)}** famille(s) sélectionnée(s) → **{len(selected_teachers)}** professeur(s) concerné(s)")
-            else:
-                all_teachers = {}
-                for fam_id, fam in data.items():
+            
+            # Extraire les IDs
+            for sel in selected_families_display:
+                for fam_id, name in family_list:
+                    if f"{name} ({fam_id})" == sel:
+                        selected_family_ids.append(fam_id)
+            
+            if selected_family_ids:
+                # Récupérer TOUS les profs de ces familles automatiquement
+                for fam_id in selected_family_ids:
+                    fam = data.get(fam_id, {})
                     lessons = fam.get("lessons", [])
                     for L in lessons:
                         teacher = L.get("teacher", "")
-                        if teacher:
-                            if teacher not in all_teachers:
-                                all_teachers[teacher] = {"families": set(), "count": 0}
-                            all_teachers[teacher]["families"].add(fam_id)
-                            all_teachers[teacher]["count"] = len(all_teachers[teacher]["families"])
-
-                teacher_options = [f"{name} ({info['count']} famille(s))" for name, info in sorted(all_teachers.items())]
-
-                selected_teachers_display = st.multiselect(
-                    "👨‍🏫 Sélectionnez les professeurs",
-                    teacher_options,
-                    key="select_teachers_notion_update_mode2"
+                        if teacher and teacher not in selected_teachers:
+                            selected_teachers.append(teacher)
+                
+                st.info(f"📊 **{len(selected_family_ids)}** famille(s) sélectionnée(s) → **{len(selected_teachers)}** professeur(s) concerné(s)")
+        
+        # ===========================
+        # MODE PAR PROFESSEUR
+        # ===========================
+        else:
+            # Récupérer tous les profs avec le nombre de familles
+            all_teachers = {}
+            for fam_id, fam in data.items():
+                lessons = fam.get("lessons", [])
+                for L in lessons:
+                    teacher = L.get("teacher", "")
+                    if teacher:
+                        if teacher not in all_teachers:
+                            all_teachers[teacher] = {"families": set(), "count": 0}
+                        all_teachers[teacher]["families"].add(fam_id)
+                        all_teachers[teacher]["count"] = len(all_teachers[teacher]["families"])
+            
+            # Liste des profs avec leur nombre de familles
+            teacher_options = [f"{name} ({info['count']} famille(s))" for name, info in sorted(all_teachers.items())]
+            
+            selected_teachers_display = st.multiselect(
+                "👨‍🏫 Sélectionnez les professeurs",
+                teacher_options,
+                key="select_teachers_notion_update_mode2"
+            )
+            
+            # Extraire les noms et les familles concernées
+            for sel in selected_teachers_display:
+                teacher_name = sel.split(" (")[0]
+                selected_teachers.append(teacher_name)
+                
+                # Ajouter toutes les familles de ce prof
+                if teacher_name in all_teachers:
+                    for fam_id in all_teachers[teacher_name]["families"]:
+                        if fam_id not in selected_family_ids:
+                            selected_family_ids.append(fam_id)
+            
+            if selected_teachers:
+                st.info(f"👨‍🏫 **{len(selected_teachers)}** professeur(s) sélectionné(s) → **{len(selected_family_ids)}** famille(s) concernée(s)")
+        
+        # ===========================
+        # BOUTON D'ACTION
+        # ===========================
+        if selected_family_ids and selected_teachers:
+            st.markdown("---")
+            
+            st.warning(f"""
+            ⚠️ **Cette action va :**
+            1. Scanner les factures PDF du dossier **{latest['name']}**
+            2. Mettre à jour **{len(selected_family_ids)}** ligne(s) Notion
+            3. Professeurs concernés : {', '.join(selected_teachers)}
+            """)
+            
+            if st.button("🔄 Mettre à jour les lignes sélectionnées", type="primary", width="stretch", key="update_selective_notion"):
+                progress = st.progress(0)
+                status = st.empty()
+                
+                def callback(p, m):
+                    progress.progress(p)
+                    status.info(m)
+                
+                # Appel de la fonction de mise à jour sélective
+                result = run_update_notion_selective(
+                    secrets, 
+                    data, 
+                    latest["path"],
+                    selected_family_ids,
+                    selected_teachers,
+                    callback,
+                    no_split=effective_no_split
                 )
-
-                for sel in selected_teachers_display:
-                    teacher_name = sel.split(" (")[0]
-                    selected_teachers.append(teacher_name)
-                    if teacher_name in all_teachers:
-                        for fam_id in all_teachers[teacher_name]["families"]:
-                            if fam_id not in selected_family_ids:
-                                selected_family_ids.append(fam_id)
-
-                if selected_teachers:
-                    st.info(f"👨‍🏫 **{len(selected_teachers)}** professeur(s) sélectionné(s) → **{len(selected_family_ids)}** famille(s) concernée(s)")
-
-            if selected_family_ids and selected_teachers:
-                st.markdown("---")
-
-                st.warning(f"""
-                ⚠️ **Cette action va :**
-                1. Scanner les factures PDF du dossier **{selected_folder['month']}**
-                2. Mettre à jour **{len(selected_family_ids)}** ligne(s) Notion
-                3. Professeurs concernés : {', '.join(selected_teachers)}
-                """)
-
-                if st.button("🔄 Mettre à jour les lignes sélectionnées", type="primary", width="stretch", key="update_selective_notion"):
-                    progress = st.progress(0)
-                    status = st.empty()
-
-                    def callback(p, m):
-                        progress.progress(p)
-                        status.info(m)
-
-                    result = run_update_notion_selective(
-                        secrets,
-                        data,
-                        selected_folder_path,
-                        selected_family_ids,
-                        selected_teachers,
-                        callback,
-                        no_split=is_no_split
-                    )
-
-                    if result["success"]:
-                        st.success(f"""
-                        ✅ **Mise à jour terminée !**
-                        - 📄 {result.get('invoices_found', 0)} facture(s) trouvée(s)
-                        - ✏️ {result.get('rows_updated', 0)} ligne(s) Notion mise(s) à jour
-                        - 📁 {result.get('subpages_updated', 0)} sous-page(s) prof mise(s) à jour
-                        """)
-
-                        if result.get("details"):
-                            with st.expander("📋 Détails des mises à jour"):
-                                for detail in result["details"]:
-                                    st.write(f"• **{detail['family']}** / {detail['teacher']} : {detail['amount']} {detail['currency']}")
-
-                        if result.get("not_found"):
-                            with st.expander("⚠️ Factures non trouvées"):
-                                for nf in result["not_found"]:
-                                    st.write(f"• {nf}")
-
-                        st.session_state.regenerated_invoices_families = []
-                        st.session_state.update_tab = None
-                    else:
-                        st.error(f"❌ Erreur : {result['error']}")
-            else:
-                st.warning("⚠️ Sélectionnez au moins une famille ou un professeur.")
-
-            st.session_state.update_tab = None
-
+                
+                if result["success"]:
+                    st.success(f"""
+                    ✅ **Mise à jour terminée !**
+                    - 📄 {result.get('invoices_found', 0)} facture(s) trouvée(s)
+                    - ✏️ {result.get('rows_updated', 0)} ligne(s) Notion mise(s) à jour
+                    - 📁 {result.get('subpages_updated', 0)} sous-page(s) prof mise(s) à jour
+                    """)
+                    
+                    if result.get("details"):
+                        with st.expander("📋 Détails des mises à jour"):
+                            for detail in result["details"]:
+                                st.write(f"• **{detail['family']}** / {detail['teacher']} : {detail['amount']} {detail['currency']}")
+                    
+                    if result.get("not_found"):
+                        with st.expander("⚠️ Factures non trouvées"):
+                            for nf in result["not_found"]:
+                                st.write(f"• {nf}")
+                    
+                    # Clear les flags
+                    st.session_state.regenerated_invoices_families = []
+                    st.session_state.update_tab = None
+                else:
+                    st.error(f"❌ Erreur : {result['error']}")
+        else:
+            st.warning("⚠️ Sélectionnez au moins une famille ou un professeur.")
+        
+        # Clear le flag après affichage
+        st.session_state.update_tab = None
+    
     # ===========================
-    # TAB 3: Ajouter ligne(s) manquante(s)
+    # TAB 3: Ajouter ligne(s) manquante(s) (NOUVEAU)
     # ===========================
     with tab3:
-        if is_no_split:
-            st.info("ℹ️ En mode no-split, utilise surtout l'onglet **Ajouter les lignes**. Cet onglet reste destiné au mode avec split / lignes professeurs.")
-        elif not data:
-            st.warning("⚠️ Aucune donnée extraite disponible pour cette fonctionnalité.")
-        elif not selected_folder_path or not selected_folder:
-            st.error("❌ Aucun dossier de factures trouvé. Veuillez d'abord générer des factures.")
-        else:
-            st.markdown("### 🔍 Ajouter ligne(s) manquante(s)")
+        st.markdown("### 🔍 Ajouter ligne(s) manquante(s)")
 
+        if not latest or latest is None:
+            st.error("❌ Aucun dossier de factures trouvé. Veuillez d'abord générer des factures.")
+        
+        else:
             st.info("""
             **Cette option permet de :**
             1. Scanner toutes les factures du dossier actuel
             2. Comparer avec les lignes Notion existantes
             3. Identifier les lignes manquantes
             4. Ajouter automatiquement les lignes manquantes
-
+            
             💡 Utile pour s'assurer que toutes les factures ont bien une ligne dans Notion.
             """)
-
-            st.warning(f"📁 Dossier analysé : **{selected_folder['month']}**")
-
+            
+            st.warning(f"📁 Dossier analysé : **{latest['name']}**")
+            
+            # ===========================
+            # ÉTAPE 1: SCAN ET COMPARAISON
+            # ===========================
             if st.button("🔍 Scanner et comparer", type="primary", width="stretch", key="scan_compare_notion"):
                 progress = st.progress(0)
                 status = st.empty()
-
+                
                 def callback(p, m):
                     progress.progress(p)
                     status.info(m)
-
-                result = run_scan_and_compare(secrets, data, selected_folder_path, callback)
-
+                
+                from scripts.update_notion import run_scan_and_compare
+                result = run_scan_and_compare(secrets, data, latest["path"], callback)
+                
                 if result["success"]:
+                    # Stocker le résultat dans session_state pour l'utiliser après
                     st.session_state.scan_compare_result = result
-
+                    
                     missing = result.get("missing", [])
                     already_exists = result.get("already_exists", [])
-
+                    
                     st.success(f"""
                     ✅ **Scan terminé !**
                     - 📄 **{result['invoices_scanned']}** facture(s) scannée(s)
@@ -2162,9 +2141,11 @@ def page_update(ctx):
                     - ✅ **{len(already_exists)}** déjà dans Notion
                     - ⚠️ **{len(missing)}** manquante(s)
                     """)
-
+                    
                     if missing:
                         st.warning(f"⚠️ **{len(missing)} ligne(s) manquante(s) dans Notion :**")
+                        
+                        # Afficher les détails dans un tableau
                         missing_data = []
                         for m in missing:
                             missing_data.append({
@@ -2173,47 +2154,55 @@ def page_update(ctx):
                                 "Montant": f"{m['amount']:.2f} {m.get('currency', 'CHF')}",
                                 "Élèves": m.get("students_formatted", ""),
                             })
+                        
                         st.dataframe(missing_data, width="stretch", hide_index=True)
                     else:
                         st.success("🎉 **Toutes les factures ont une ligne dans Notion !**")
                 else:
                     st.error(f"❌ Erreur : {result['error']}")
-
+            
+            # ===========================
+            # ÉTAPE 2: AJOUTER LES MANQUANTES
+            # ===========================
             if "scan_compare_result" in st.session_state:
                 result = st.session_state.scan_compare_result
                 missing = result.get("missing", [])
-
+                
                 if missing:
                     st.markdown("---")
                     st.markdown("### ➕ Ajouter les lignes manquantes")
-
+                    
                     if st.button(f"➕ Ajouter les {len(missing)} ligne(s) manquante(s)", type="primary", width="stretch", key="add_missing_notion"):
                         progress = st.progress(0)
                         status = st.empty()
-
+                        
                         def callback(p, m):
                             progress.progress(p)
                             status.info(m)
-
+                        
+                        from scripts.update_notion import run_add_missing_rows
                         add_result = run_add_missing_rows(secrets, data, missing, callback)
-
+                        
                         if add_result["success"]:
                             st.success(f"""
                             ✅ **Ligne(s) ajoutée(s) !**
                             - ➕ **{add_result['added']}** ligne(s) ajoutée(s) dans Notion
                             """)
-
+                            
+                            # Afficher les erreurs s'il y en a
                             if add_result.get("errors"):
                                 with st.expander("⚠️ Erreurs rencontrées"):
                                     for err in add_result["errors"]:
                                         st.error(err)
-
+                            
+                            # Clear le résultat
                             del st.session_state.scan_compare_result
-
+                            
+                            # Proposer d'aller vers Sync Stripe
                             if add_result['added'] > 0:
                                 st.markdown("---")
                                 st.info("💡 **Prochaine étape :** Allez sur **Sync Stripe → Notion** pour synchroniser les paiements.")
-
+                                
                                 if st.button("🔄 Aller vers Sync Stripe → Notion", width="stretch", key="go_to_sync"):
                                     st.session_state.current_page = "sync"
                                     st.rerun()
