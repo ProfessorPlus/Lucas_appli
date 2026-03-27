@@ -13,7 +13,7 @@ import calendar
 
 # Import des scripts
 from scripts.extract_tutorbird import run_extraction
-from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
+from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows, run_add_notion_rows_from_invoice_folder_no_split
 from scripts.create_payment_links import run_create_payment_links
 from scripts.generate_invoices import run_generate_invoices
 from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics
@@ -1895,23 +1895,55 @@ def page_update(ctx):
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
-            
-            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split)
-            
-            if result["success"]:
-                pages_line = (
-                    f"- {result['pages_created']} sous-page(s) prof créée(s)"
-                    if not effective_no_split
-                    else "- 0 sous-page prof créée (désactivé)"
+
+            if effective_no_split:
+                available_folders = list_invoice_folders()
+                selected_folder = available_folders[0] if available_folders else None
+                invoice_folder_path = None
+
+                if selected_folder:
+                    invoice_folder_path = _ensure_local_invoice_folder(selected_folder)
+                elif latest and latest.get("path"):
+                    invoice_folder_path = latest.get("path")
+
+                if not invoice_folder_path:
+                    st.error("❌ Aucun dossier de factures exploitable trouvé pour l'ajout no-split.")
+                    return
+
+                result = run_add_notion_rows_from_invoice_folder_no_split(
+                    secrets,
+                    data,
+                    invoice_folder_path,
+                    callback,
+                    base_dir=ctx["BASE_DIR"],
                 )
-                st.success(f"""
-                ✅ **Mise à jour terminée**
-                - {result['added']} ligne(s) ajoutée(s)
-                - {result['skipped']} ligne(s) ignorée(s) (doublons)
-                {pages_line}
-                """)
+
+                if result["success"]:
+                    st.success(f"""
+                    ✅ **Ajout no-split terminé**
+                    - {result.get('added', 0)} ligne(s) ajoutée(s)
+                    - {result.get('skipped', 0)} ligne(s) ignorée(s) (doublons)
+                    - {result.get('failed', 0)} ligne(s) en échec
+                    - 0 sous-page prof créée (désactivé)
+                    """)
+                    if result.get("errors"):
+                        with st.expander("⚠️ Lignes non ajoutées"):
+                            for err in result["errors"]:
+                                st.write(f"• {err}")
+                else:
+                    st.error(f"❌ Erreur : {result['error']}")
             else:
-                st.error(f"❌ Erreur : {result['error']}")
+                result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=False)
+                
+                if result["success"]:
+                    st.success(f"""
+                    ✅ **Mise à jour terminée**
+                    - {result['added']} ligne(s) ajoutée(s)
+                    - {result['skipped']} ligne(s) ignorée(s) (doublons)
+                    - {result['pages_created']} sous-page(s) prof créée(s)
+                    """)
+                else:
+                    st.error(f"❌ Erreur : {result['error']}")
     
     # ===========================
     # TAB 2: Mettre à jour certaines lignes

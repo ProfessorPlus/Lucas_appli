@@ -748,6 +748,8 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
 
         added = 0
         skipped = 0
+        failed = 0
+        errors = []
         rows = list(family_rows.values())
         total_rows_to_add = len(rows)
 
@@ -790,6 +792,10 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
                 added += 1
                 existing_keys.add(key)
                 next_id += 1
+            else:
+                failed += 1
+                if len(errors) < 10:
+                    errors.append(f"{family_name} | {amount:.2f} {row.get('currency', 'CHF')}")
 
         if metadata_page_id:
             try:
@@ -844,6 +850,8 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
             "success": True,
             "added": added,
             "skipped": skipped,
+            "failed": failed,
+            "errors": errors,
             "families_detected": len(rows),
             "invoice_date": folder_invoice_date,
             "payment_links_source": links_path,
