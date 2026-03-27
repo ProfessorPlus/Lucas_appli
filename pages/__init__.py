@@ -1749,6 +1749,12 @@ def page_sync(ctx):
                 - {result1['total_not_found']} non trouvé(s) dans Notion
                 """)
                 
+                if result1.get("duplicates_warning"):
+                    with st.expander(f"⚠️ {len(result1['duplicates_warning'])} doublon(s) détecté(s) dans Notion", expanded=True):
+                        st.warning("Des lignes en double ont été trouvées dans Notion. Vérifiez et supprimez les doublons manuellement.")
+                        for dw in result1["duplicates_warning"]:
+                            st.write(f"• {dw}")
+                
                 if result1.get("not_found"):
                     with st.expander("⚠️ Paiements non trouvés dans Notion"):
                         for nf in result1["not_found"]:
