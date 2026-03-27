@@ -414,8 +414,34 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 except:
                     pass
             
+            # Collecter profs et élèves depuis les leçons
+            profs_set = []
+            eleves_set = []
+            for L in lessons_filtered:
+                t = (L.get("teacher") or "").strip()
+                if t and t not in profs_set:
+                    profs_set.append(t)
+                s = (L.get("student") or "").strip()
+                if s and s not in eleves_set:
+                    eleves_set.append(s)
+            
+            profs_label = ", ".join(profs_set) if profs_set else ""
+            eleves_label = ", ".join(eleves_set) if eleves_set else ""
+            
+            # Déterminer la devise
+            currency = (fam.get("currency") or "").upper()
+            if not currency:
+                currency = "CHF"  # défaut
+            
+            # Année
+            year_value = None
+            if date_iso:
+                try:
+                    year_value = int(date_iso[:4])
+                except:
+                    pass
+            
             # Créer la page dans la DB Paiements
-            # NOTE: Pas de "Email parent" — cette colonne n'existe pas dans la DB Notion
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
                 "Montant dû Famille/Prof": {"number": round(total_amount, 2)},
@@ -423,6 +449,22 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
+            
+            # Professeur (rich_text)
+            if profs_label:
+                properties["Professeur"] = {"rich_text": [{"text": {"content": profs_label}}]}
+            
+            # Élève (rich_text)
+            if eleves_label:
+                properties["Élève"] = {"rich_text": [{"text": {"content": eleves_label}}]}
+            
+            # Devise (rich_text)
+            if currency:
+                properties["Devise"] = {"rich_text": [{"text": {"content": currency}}]}
+            
+            # Année (number)
+            if year_value:
+                properties["Année"] = {"number": year_value}
             
             if date_iso:
                 properties["Date cours factures"] = {"date": {"start": date_iso}}
