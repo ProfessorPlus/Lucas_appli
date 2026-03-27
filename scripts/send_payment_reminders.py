@@ -1,7 +1,7 @@
 """
 🔔 Send Payment Reminders
-Envoie des rappels de paiement aux familles n'ayant pas encore payé.
-Version robuste : lit les bonnes colonnes Notion et groupe par famille.
+Envoie des rappels de paiement aux familles n'ayant pas encore payé
+VERSION CORRIGÉE - Gère les sous-dossiers par famille
 """
 
 import os
@@ -17,62 +17,36 @@ from difflib import SequenceMatcher
 import time
 import requests
 
+
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
 
 
 def normalize(s):
+    """Normalise un nom : minuscules, sans accents, espaces propres"""
     if not isinstance(s, str):
         return ""
     s = s.lower().strip()
     s = unicodedata.normalize('NFD', s)
     s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')
-    s = s.replace('-', ' ').replace('_', ' ')
+    s = s.replace("-", " ")
+    s = s.replace("_", " ")
     s = re.sub(r"\s+", " ", s)
-    if ',' in s:
-        p = [x.strip() for x in s.split(',', 1)]
+    if "," in s:
+        p = [x.strip() for x in s.split(",", 1)]
         if len(p) == 2:
             s = f"{p[1]} {p[0]}"
     return s.strip()
 
 
-def names_match(a, b):
-    na = normalize(a)
-    nb = normalize(b)
-    if not na or not nb:
+
+
+def names_match(n1, n2):
+    a = set(normalize(n1).split())
+    b = set(normalize(n2).split())
+    if not a or not b:
         return False
-    if na == nb:
-        return True
-    sa, sb = set(na.split()), set(nb.split())
-    return sa == sb or len(sa & sb) >= 2 or SequenceMatcher(None, na, nb).ratio() > 0.82
-
-
-def _pick_first_existing(db_properties, *names):
-    for name in names:
-        if name in db_properties:
-            return name
-    return names[0] if names else None
-
-
-def _get_text_property(props, prop_name):
-    prop = props.get(prop_name, {})
-    if prop.get('title'):
-        items = prop.get('title', [])
-        return items[0].get('plain_text', '').strip() if items else ''
-    if prop.get('rich_text'):
-        items = prop.get('rich_text', [])
-        return items[0].get('plain_text', '').strip() if items else ''
-    return ''
-
-
-def _get_email_property(props, prop_name):
-    prop = props.get(prop_name, {})
-    if prop.get('email'):
-        return str(prop.get('email') or '').strip()
-    if prop.get('rich_text'):
-        items = prop.get('rich_text', [])
-        return items[0].get('plain_text', '').strip() if items else ''
-    return ''
+    return a == b or len(a & b) >= 2 or (len(a) == 2 and a.issubset(b)) or (len(b) == 2 and b.issubset(a))
 
 
 def _first_non_empty_email(*values):
@@ -80,48 +54,67 @@ def _first_non_empty_email(*values):
         if value is None:
             continue
         email = str(value).strip()
-        if email:
+        if email and "@" in email:
             return email
-    return ''
+    return ""
 
 
 def _extract_email_candidate(fam):
-    """Retourne le meilleur email disponible dans les données TutorBird/converties.
-    On accepte plusieurs clés car selon les scripts la donnée peut arriver sous
-    parent_email, email_client, email, ou dans un sous-dict parent/client.
-    """
     if not isinstance(fam, dict):
-        return ''
-
-    parent = fam.get('parent') if isinstance(fam.get('parent'), dict) else {}
-    client = fam.get('client') if isinstance(fam.get('client'), dict) else {}
-
+        return ""
+    parent = fam.get("parent") if isinstance(fam.get("parent"), dict) else {}
+    client = fam.get("client") if isinstance(fam.get("client"), dict) else {}
+    contact = fam.get("contact") if isinstance(fam.get("contact"), dict) else {}
     return _first_non_empty_email(
-        fam.get('parent_email'),
-        fam.get('email_client'),
-        fam.get('client_email'),
-        fam.get('email'),
-        parent.get('email'),
-        parent.get('parent_email'),
-        client.get('email'),
-        client.get('email_client'),
+        fam.get("parent_email"),
+        fam.get("email_client"),
+        fam.get("client_email"),
+        fam.get("email"),
+        fam.get("emailParent"),
+        parent.get("email"),
+        parent.get("parent_email"),
+        client.get("email"),
+        client.get("email_client"),
+        contact.get("email"),
     )
 
 
 def _enrich_email_from_data(family_name, data):
     if not data:
-        return ''
+        return ""
     for fam in data.values():
-        candidate_name = (
-            fam.get('parent_name')
-            or fam.get('family_name')
-            or fam.get('client_name')
-            or fam.get('name')
-            or ''
-        )
+        candidate_name = fam.get("parent_name") or fam.get("family_name") or fam.get("client_name") or fam.get("name") or ""
         if names_match(candidate_name, family_name):
             return _extract_email_candidate(fam)
-    return ''
+    return ""
+
+
+def _get_text_property(props, name):
+    prop = props.get(name, {})
+    if prop.get("title"):
+        items = prop.get("title", [])
+        return items[0].get("plain_text", "").strip() if items else ""
+    if prop.get("rich_text"):
+        items = prop.get("rich_text", [])
+        return items[0].get("plain_text", "").strip() if items else ""
+    return ""
+
+
+def _get_email_property(props, name):
+    prop = props.get(name, {})
+    if prop.get("email"):
+        return str(prop.get("email", "")).strip()
+    if prop.get("rich_text"):
+        items = prop.get("rich_text", [])
+        return items[0].get("plain_text", "").strip() if items else ""
+    return ""
+
+
+def _pick_first_existing(db_properties, *names):
+    for name in names:
+        if name in db_properties:
+            return name
+    return names[0] if names else None
 
 
 def _list_invoice_family_names(invoice_folder):
@@ -132,14 +125,18 @@ def _list_invoice_family_names(invoice_folder):
         item_path = os.path.join(invoice_folder, item)
         if os.path.isdir(item_path):
             names.append(item)
+        elif item.lower().endswith('.pdf'):
+            names.append(os.path.splitext(item)[0])
     return names
 
-
 def get_default_reminder_template(month_name=None, year=None):
+    """Retourne le template d'email de rappel par défaut."""
+    
     if not month_name:
         now = datetime.now()
         month_name = MONTHS_FR[now.month - 1]
         year = now.year
+    
     return {
         "subject": f"Rappel - Facture(s) en attente - Soutien scolaire - {month_name} {year}",
         "body": f"""Bonjour,
@@ -161,8 +158,10 @@ Professor+
 
 
 def get_unpaid_families_from_notion(secrets, callback=None, data=None, invoice_folder=None):
-    """Retourne les familles non payées depuis Notion, regroupées par famille.
-    Si invoice_folder est fourni, on garde prioritairement les familles présentes dans le dossier de factures.
+    """
+    Récupère les familles non payées depuis Notion, regroupées par famille.
+    Si un email manque dans Notion, on essaie de le retrouver dans les données TutorBird extraites.
+    Si invoice_folder est fourni, on garde prioritairement les familles présentes dans le dossier.
     """
 
     def update(progress, message):
@@ -170,223 +169,266 @@ def get_unpaid_families_from_notion(secrets, callback=None, data=None, invoice_f
             callback(progress, message)
 
     try:
-        NOTION_TOKEN = secrets['notion']['token']
-        DB_PAIEMENTS = secrets['notion']['paiements_database_id']
+        NOTION_TOKEN = secrets["notion"]["token"]
+        DB_PAIEMENTS = secrets["notion"]["paiements_database_id"]
 
         HEADERS = {
-            'Authorization': f'Bearer {NOTION_TOKEN}',
-            'Content-Type': 'application/json',
-            'Notion-Version': '2022-06-28',
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28",
         }
 
         def notion_request(method, endpoint, json_data=None):
-            time.sleep(0.25)
-            url = f'https://api.notion.com/v1/{endpoint}'
-            if method == 'GET':
+            time.sleep(0.35)
+            url = f"https://api.notion.com/v1/{endpoint}"
+            if method == "GET":
                 r = requests.get(url, headers=HEADERS, timeout=30)
-            elif method == 'POST':
+            elif method == "POST":
                 r = requests.post(url, headers=HEADERS, json=json_data, timeout=30)
             else:
                 return None
             if r.status_code == 429:
-                retry = int(r.headers.get('Retry-After', 2))
+                retry = int(r.headers.get("Retry-After", 2))
                 time.sleep(retry)
                 return notion_request(method, endpoint, json_data)
             if r.status_code in [200, 201]:
-                return r.json() if r.text else {'ok': True}
-            print(f"⚠️ Notion {method} {endpoint} -> {r.status_code}: {r.text[:500]}")
+                return r.json() if r.text else {"ok": True}
             return None
 
-        update(10, '📥 Chargement des données Notion...')
-        db_info = notion_request('GET', f'databases/{DB_PAIEMENTS}')
+        update(10, "📥 Chargement des données Notion...")
+        db_info = notion_request("GET", f"databases/{DB_PAIEMENTS}")
         if not db_info:
-            return {'success': False, 'error': 'Impossible de lire la base Notion.'}
+            return {"success": False, "error": "Impossible de lire la base Notion."}
 
-        db_properties = db_info.get('properties', {})
-        paid_prop = _pick_first_existing(db_properties, 'Payé ?', 'Payé')
-        amount_prop = _pick_first_existing(db_properties, 'Montant dû Famille/Prof', 'Montant total dû')
+        db_properties = db_info.get("properties", {})
+        paid_prop = _pick_first_existing(db_properties, "Payé ?", "Payé")
+        amount_prop = _pick_first_existing(db_properties, "Montant dû Famille/Prof", "Montant total dû")
 
         all_rows = []
         cursor = None
         while True:
-            payload = {
-                'filter': {
-                    'property': paid_prop,
-                    'checkbox': {'equals': False}
-                }
-            }
+            payload = {"filter": {"property": paid_prop, "checkbox": {"equals": False}}}
             if cursor:
-                payload['start_cursor'] = cursor
-            data_resp = notion_request('POST', f'databases/{DB_PAIEMENTS}/query', payload)
+                payload["start_cursor"] = cursor
+            data_resp = notion_request("POST", f"databases/{DB_PAIEMENTS}/query", payload)
             if not data_resp:
                 break
-            all_rows.extend(data_resp.get('results', []))
-            if not data_resp.get('has_more'):
+            all_rows.extend(data_resp.get("results", []))
+            if not data_resp.get("has_more"):
                 break
-            cursor = data_resp.get('next_cursor')
+            cursor = data_resp.get("next_cursor")
 
-        update(50, f'📊 {len(all_rows)} ligne(s) non payée(s) trouvée(s)')
+        update(50, f"📊 {len(all_rows)} ligne(s) non payée(s) trouvée(s)")
 
         folder_family_names = _list_invoice_family_names(invoice_folder)
         grouped = {}
         for row in all_rows:
-            props = row.get('properties', {})
-            family_name = _get_text_property(props, 'Famille')
-            if not family_name:
+            props = row.get("properties", {})
+            famille = _get_text_property(props, "Famille")
+            if not famille:
                 continue
 
-            if folder_family_names and not any(names_match(folder_name, family_name) for folder_name in folder_family_names):
+            if folder_family_names and not any(names_match(folder_name, famille) for folder_name in folder_family_names):
                 continue
 
-            email = _get_email_property(props, 'Email parent')
+            email = _get_email_property(props, "Email parent")
             if not email:
-                email = _enrich_email_from_data(family_name, data)
+                email = _enrich_email_from_data(famille, data)
 
-            amount = props.get(amount_prop, {}).get('number', 0) or 0
+            montant = props.get(amount_prop, {}).get("number", 0) or props.get("Montant total dû", {}).get("number", 0) or props.get("Montant dû Famille/Prof", {}).get("number", 0) or 0
             date_cours = None
-            if props.get('Date cours factures', {}).get('date'):
-                date_cours = props['Date cours factures']['date'].get('start')
+            if props.get("Date cours factures", {}).get("date"):
+                date_cours = props["Date cours factures"]["date"].get("start")
 
-            key = normalize(family_name)
+            key = normalize(famille)
             item = grouped.setdefault(key, {
-                'parent_name': family_name,
-                'parent_email': email,
-                'amount': 0.0,
-                'date': date_cours,
-                'page_ids': [],
-                'rows': 0,
+                "parent_name": famille,
+                "parent_email": email,
+                "amount": 0.0,
+                "date": date_cours,
+                "page_ids": [],
+                "rows": 0,
             })
-            if not item['parent_email'] and email:
-                item['parent_email'] = email
-            if date_cours and not item['date']:
-                item['date'] = date_cours
-            item['amount'] += float(amount or 0)
-            item['page_ids'].append(row['id'])
-            item['rows'] += 1
+            if not item["parent_email"] and email:
+                item["parent_email"] = email
+            if date_cours and not item["date"]:
+                item["date"] = date_cours
+            item["amount"] += float(montant or 0)
+            item["page_ids"].append(row["id"])
+            item["rows"] += 1
 
         unpaid = list(grouped.values())
-        unpaid.sort(key=lambda x: normalize(x['parent_name']))
-        return {'success': True, 'unpaid': unpaid}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+        unpaid.sort(key=lambda x: normalize(x["parent_name"]))
+        return {"success": True, "unpaid": unpaid}
 
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def run_send_reminders(secrets, data, invoice_folder, data_dir,
                        custom_subject=None, custom_body=None,
                        selected_families=None, send_to_test=False,
                        callback=None):
+    """
+    Envoie des rappels de paiement aux familles n'ayant pas payé.
+    
+    Args:
+        secrets: Configuration YAML
+        data: Données des familles (pour matcher les factures)
+        invoice_folder: Dossier contenant les factures
+        data_dir: Dossier des données
+        custom_subject: Sujet personnalisé (optionnel)
+        custom_body: Corps personnalisé (optionnel)
+        selected_families: Liste des parent_name à relancer (None = tous)
+        send_to_test: Si True, envoie uniquement à l'email de test
+        callback: Fonction callback(progress, message)
+    
+    Returns:
+        dict: {"success": bool, "sent": int, "errors": list}
+    """
+    
     def update(progress, message):
         if callback:
             callback(progress, message)
-
+    
     try:
-        gmail_config = secrets.get('gmail', {})
-        sender_email = gmail_config.get('email')
-        app_password = gmail_config.get('app_password')
+        # Config email
+        gmail_config = secrets.get("gmail", {})
+        sender_email = gmail_config.get("email")
+        app_password = gmail_config.get("app_password")
+        
         if not sender_email or not app_password:
-            return {'success': False, 'error': 'Configuration email manquante dans secrets.yaml'}
-
-        update(5, '📥 Récupération des impayés depuis Notion...')
+            return {"success": False, "error": "Configuration email manquante dans secrets.yaml"}
+        
+        # Récupérer les familles non payées depuis Notion
+        update(5, "📥 Récupération des impayés depuis Notion...")
         result = get_unpaid_families_from_notion(secrets, callback, data=data, invoice_folder=invoice_folder)
-        if not result['success']:
+        
+        if not result["success"]:
             return result
-
-        unpaid_families = result['unpaid']
-        if selected_families:
-            unpaid_families = [f for f in unpaid_families if f['parent_name'] in selected_families]
+        
+        unpaid_families = result["unpaid"]
+        
         if not unpaid_families:
-            return {'success': True, 'sent': 0, 'message': 'Aucune famille avec paiement en attente', 'total': 0}
-
-        # Tenter une seconde enrichissement email si nécessaire
-        for fam in unpaid_families:
-            if not fam.get('parent_email'):
-                fam['parent_email'] = _enrich_email_from_data(fam['parent_name'], data)
-
-        template = get_default_reminder_template()
-        subject = custom_subject or template['subject']
-        body = custom_body or template['body']
-
+            return {"success": True, "sent": 0, "message": "Aucune famille avec paiement en attente"}
+        
+        # Filtrer si sélection
+        if selected_families:
+            unpaid_families = [f for f in unpaid_families if f["parent_name"] in selected_families]
+        
         update(20, f"📊 {len(unpaid_families)} famille(s) à relancer")
-        update(30, '🔌 Connexion au serveur email...')
-        server = smtplib.SMTP('smtp.gmail.com', 587)
+        
+        # Template
+        template = get_default_reminder_template()
+        subject = custom_subject or template["subject"]
+        body = custom_body or template["body"]
+        
+        # Connexion SMTP
+        update(30, "🔌 Connexion au serveur email...")
+        
+        server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(sender_email, app_password)
-
+        
         sent = 0
         errors = []
         total = len(unpaid_families)
-
+        
         for i, family in enumerate(unpaid_families):
-            progress = int(30 + (i / max(total, 1) * 65))
-            recipient = sender_email if send_to_test else family.get('parent_email', '')
+            progress = int(30 + (i / total * 65))
+
+            if not family.get("parent_email"):
+                family["parent_email"] = _enrich_email_from_data(family["parent_name"], data)
+
+            recipient = sender_email if send_to_test else family.get("parent_email", "")
             if not recipient:
                 errors.append(f"{family['parent_name']}: email manquant")
                 continue
-
+            
             update(progress, f"📧 Rappel à {family['parent_name']}...")
+            
             try:
+                # Créer le message
                 msg = MIMEMultipart()
-                msg['From'] = sender_email
-                msg['To'] = recipient
-                msg['Subject'] = subject
-                msg.attach(MIMEText(body, 'plain'))
-
+                msg["From"] = sender_email
+                msg["To"] = recipient
+                msg["Subject"] = subject
+                msg.attach(MIMEText(body, "plain"))
+                
+                # Chercher et attacher les factures correspondantes
+                # ⚠️ STRUCTURE : invoice_folder contient des sous-dossiers par famille
                 attached_count = 0
-                if invoice_folder and os.path.exists(invoice_folder):
-                    parent_norm = normalize(family['parent_name'])
+                
+                if os.path.exists(invoice_folder):
+                    parent_norm = normalize(family["parent_name"])
+                    
+                    # Scanner les sous-dossiers
                     for item in os.listdir(invoice_folder):
                         item_path = os.path.join(invoice_folder, item)
+                        
                         if os.path.isdir(item_path):
                             folder_norm = normalize(item)
+                            
+                            # Vérifier si ce dossier correspond à la famille
                             score = SequenceMatcher(None, folder_norm, parent_norm).ratio()
-                            if score > 0.7 or folder_norm == parent_norm or names_match(folder_norm, parent_norm):
+                            
+                            if score > 0.7 or folder_norm == parent_norm:
+                                # Attacher tous les PDFs de ce dossier
                                 for pdf in os.listdir(item_path):
-                                    if pdf.lower().endswith('.pdf'):
+                                    if pdf.lower().endswith(".pdf"):
                                         invoice_path = os.path.join(item_path, pdf)
-                                        with open(invoice_path, 'rb') as f:
-                                            part = MIMEBase('application', 'pdf')
+                                        with open(invoice_path, "rb") as f:
+                                            part = MIMEBase("application", "pdf")
                                             part.set_payload(f.read())
                                             encoders.encode_base64(part)
-                                            part.add_header('Content-Disposition', f'attachment; filename={pdf}')
+                                            part.add_header("Content-Disposition", f"attachment; filename={pdf}")
                                             msg.attach(part)
                                             attached_count += 1
-                                break
-                        elif item.lower().endswith('.pdf'):
+                                break  # On a trouvé le bon dossier
+                        
+                        # Fallback: PDFs à la racine
+                        elif item.lower().endswith(".pdf"):
                             pdf_lower = item.lower()
                             name_parts = parent_norm.split()
                             if any(part in pdf_lower for part in name_parts if len(part) > 2):
                                 invoice_path = os.path.join(invoice_folder, item)
-                                with open(invoice_path, 'rb') as f:
-                                    part = MIMEBase('application', 'pdf')
+                                with open(invoice_path, "rb") as f:
+                                    part = MIMEBase("application", "pdf")
                                     part.set_payload(f.read())
                                     encoders.encode_base64(part)
-                                    part.add_header('Content-Disposition', f'attachment; filename={item}')
+                                    part.add_header("Content-Disposition", f"attachment; filename={item}")
                                     msg.attach(part)
                                     attached_count += 1
-
+                
+                # Envoyer
                 server.sendmail(sender_email, recipient, msg.as_string())
                 sent += 1
+                
             except Exception as e:
                 errors.append(f"{family['parent_name']}: {str(e)}")
-
+        
         server.quit()
-        update(100, '✅ Terminé !')
+        
+        update(100, "✅ Terminé !")
+        
         return {
-            'success': True,
-            'sent': sent,
-            'total': total,
-            'errors': errors,
-            'test_mode': send_to_test,
+            "success": True,
+            "sent": sent,
+            "total": total,
+            "errors": errors,
+            "test_mode": send_to_test
         }
+        
     except smtplib.SMTPAuthenticationError:
-        return {'success': False, 'error': "Erreur d'authentification Gmail"}
+        return {"success": False, "error": "Erreur d'authentification Gmail"}
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        return {"success": False, "error": str(e)}
 
 
 def should_send_automatic_reminder():
+    """Vérifie si on est le 11 du mois (pour rappel automatique)."""
     return datetime.now().day == 11
 
 
 def get_reminder_settings_path(config_dir):
-    return os.path.join(config_dir, 'reminder_settings.yaml')
+    """Retourne le chemin du fichier de paramètres des rappels."""
+    return os.path.join(config_dir, "reminder_settings.yaml")

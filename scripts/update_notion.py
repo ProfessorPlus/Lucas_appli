@@ -10,6 +10,7 @@ import time
 import re
 import unicodedata
 import requests
+import yaml
 from datetime import datetime
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -56,12 +57,39 @@ def format_date_title(date_str):
     except:
         return date_str
 
+def load_familles_euros(base_dir=None):
+    paths = []
+    if base_dir:
+        paths.extend([
+            os.path.join(base_dir, "config", "familles_euros.yaml"),
+            os.path.join(base_dir, "familles_euros.yaml"),
+        ])
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(repo_root)
+    paths.extend([
+        os.path.join(repo_root, "config", "familles_euros.yaml"),
+        os.path.join(repo_root, "familles_euros.yaml"),
+    ])
+    seen = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                euros = data.get("euros", []) or []
+                return [str(x).strip() for x in euros if str(x).strip()]
+            except Exception:
+                pass
+    return []
 
-def _pick_first_existing(db_properties, *names):
-    for name in names:
-        if name in db_properties:
-            return name
-    return names[0] if names else None
+
+def resolve_family_currency(family_name, euro_families, fallback="CHF"):
+    if family_name and any(names_match(family_name, fam) for fam in (euro_families or [])):
+        return "EUR"
+    return (fallback or "CHF").upper()
 
 
 def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
@@ -88,6 +116,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         DB_PAIEMENTS = secrets["notion"]["paiements_database_id"]
         ROOT_PAGE = secrets["notion"]["root_page_paiements"]
         TEACHERS = secrets.get("teachers", {})
+        euro_families = load_familles_euros(base_dir)
         
         HEADERS = {
             "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -134,11 +163,6 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                     break
                 cursor = data.get("next_cursor")
             return results
-
-        db_info = notion_request("GET", f"databases/{DB_PAIEMENTS}") or {}
-        db_properties = db_info.get("properties", {})
-        amount_prop_name = _pick_first_existing(db_properties, "Montant dû Famille/Prof", "Montant total dû")
-        paid_prop_name = _pick_first_existing(db_properties, "Payé ?", "Payé")
         
         # ===========================
         # CACHES pour les pages profs
@@ -281,7 +305,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 if famille_prop.get("title"):
                     famille = famille_prop["title"][0]["plain_text"] if famille_prop["title"] else ""
                 
-                montant = props.get(amount_prop_name, {}).get("number", 0) or props.get("Montant total dû", {}).get("number", 0) or props.get("Montant dû Famille/Prof", {}).get("number", 0)
+                montant = props.get("Montant total dû", {}).get("number", 0)
                 
                 if famille and montant:
                     existing_keys.add((famille.lower(), round(montant, 2)))
@@ -329,7 +353,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             progress = int(20 + (current / total * 60))
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
-            parent_email = fam.get("parent_email") or ""
+            parent_email = fam.get("parent_email") or fam.get("email_client") or fam.get("client_email") or fam.get("email") or ""
             total_amount = fam.get("total_courses", 0)
             
             # Vérifier doublon
@@ -365,13 +389,15 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                     pass
             
             # Créer la page dans la DB Paiements
+            family_currency = resolve_family_currency(parent_name, euro_families, fam.get("currency") or "CHF")
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
                 "Email parent": {"email": parent_email} if parent_email else {"rich_text": []},
-                amount_prop_name: {"number": round(total_amount, 2)},
+                "Montant total dû": {"number": round(total_amount, 2)},
                 "Heures": {"number": round(total_hours, 2)},
-                paid_prop_name: {"checkbox": False},
+                "Payé": {"checkbox": False},
                 "id paiements": {"number": next_id},
+                "Devise": {"rich_text": [{"text": {"content": family_currency}}]},
             }
             
             if date_iso:
@@ -460,7 +486,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         all_rows = notion_request("POST", f"databases/{DB_PAIEMENTS}/query", {})
         if all_rows:
             total_rows = len(all_rows.get("results", []))
-            paid_rows = sum(1 for r in all_rows.get("results", []) if r["properties"].get("Payé ?", {}).get("checkbox", False) or r["properties"].get("Payé", {}).get("checkbox", False))
+            paid_rows = sum(1 for r in all_rows.get("results", []) if r["properties"].get("Payé", {}).get("checkbox", False))
             
             # Supprimer l'ancien dashboard
             for b in get_children(ROOT_PAGE):
@@ -561,10 +587,6 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     break
                 cursor = resp.get("next_cursor")
             return results
-
-        db_info = notion_request("GET", f"databases/{DB_PAIEMENTS}") or {}
-        db_properties = db_info.get("properties", {})
-        amount_prop_name = _pick_first_existing(db_properties, "Montant dû Famille/Prof", "Montant total dû")
         
         # ===========================
         # CACHES pour les pages profs (comme dans update_notion_prof_pages)
@@ -972,7 +994,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                 
                 # Mettre à jour la ligne famille
                 properties = {
-                    amount_prop_name: {"number": round(totals["amount"], 2)},
+                    "Montant total dû": {"number": round(totals["amount"], 2)},
                     "Heures": {"number": round(totals["hours"], 2)},
                 }
                 
@@ -1416,6 +1438,7 @@ def run_add_missing_rows(secrets, data, missing_rows, callback=None):
         added = 0
         errors = []
         total = len(missing_rows)
+        euro_families = load_familles_euros()
         
         for i, row in enumerate(missing_rows):
             progress_val = int(10 + (i / total * 85))
@@ -1435,6 +1458,8 @@ def run_add_missing_rows(secrets, data, missing_rows, callback=None):
             # Utiliser le nom d'élève formaté (Nom, Prénom1 & Prénom2)
             eleve_formatted = row.get("students_formatted", "") or ", ".join(row.get("students", []))
             
+            row_currency = resolve_family_currency(row["family_name"], euro_families, row.get("currency") or "CHF")
+
             # Créer la ligne dans la DB Paiements avec TOUTES les colonnes
             properties = {
                 "Famille": {"title": [{"text": {"content": row["family_name"]}}]},
@@ -1457,8 +1482,8 @@ def run_add_missing_rows(secrets, data, missing_rows, callback=None):
                 properties["Mois / Date"] = {"rich_text": [{"text": {"content": row["mois_date"]}}]}
             
             # Devise (rich_text)
-            if row.get("currency"):
-                properties["Devise"] = {"rich_text": [{"text": {"content": row["currency"]}}]}
+            if row_currency:
+                properties["Devise"] = {"rich_text": [{"text": {"content": row_currency}}]}
             
             # Heures (rich_text) - format "5h" sans décimale si entier
             if row.get("hours"):
