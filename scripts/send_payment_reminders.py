@@ -75,13 +75,52 @@ def _get_email_property(props, prop_name):
     return ''
 
 
+def _first_non_empty_email(*values):
+    for value in values:
+        if value is None:
+            continue
+        email = str(value).strip()
+        if email:
+            return email
+    return ''
+
+
+def _extract_email_candidate(fam):
+    """Retourne le meilleur email disponible dans les données TutorBird/converties.
+    On accepte plusieurs clés car selon les scripts la donnée peut arriver sous
+    parent_email, email_client, email, ou dans un sous-dict parent/client.
+    """
+    if not isinstance(fam, dict):
+        return ''
+
+    parent = fam.get('parent') if isinstance(fam.get('parent'), dict) else {}
+    client = fam.get('client') if isinstance(fam.get('client'), dict) else {}
+
+    return _first_non_empty_email(
+        fam.get('parent_email'),
+        fam.get('email_client'),
+        fam.get('client_email'),
+        fam.get('email'),
+        parent.get('email'),
+        parent.get('parent_email'),
+        client.get('email'),
+        client.get('email_client'),
+    )
+
+
 def _enrich_email_from_data(family_name, data):
     if not data:
         return ''
     for fam in data.values():
-        candidate_name = fam.get('parent_name') or fam.get('family_name') or ''
+        candidate_name = (
+            fam.get('parent_name')
+            or fam.get('family_name')
+            or fam.get('client_name')
+            or fam.get('name')
+            or ''
+        )
         if names_match(candidate_name, family_name):
-            return (fam.get('parent_email') or '').strip()
+            return _extract_email_candidate(fam)
     return ''
 
 
