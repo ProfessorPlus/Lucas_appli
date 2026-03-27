@@ -166,7 +166,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 return r.json() if r.text else {"ok": True}
             
             # Log d'erreur pour debug
-            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:300]}")
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         def get_children(block_id):
@@ -326,7 +326,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                 if famille_prop.get("title"):
                     famille = famille_prop["title"][0]["plain_text"] if famille_prop["title"] else ""
                 
-                montant = props.get("Montant total dû", {}).get("number", 0)
+                montant = props.get("Montant dû Famille/Prof", {}).get("number", 0) or props.get("Montant total dû", {}).get("number", 0)
                 
                 if famille and montant:
                     existing_keys.add((famille.lower(), round(montant, 2)))
@@ -429,7 +429,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             # Créer la page dans la DB Paiements
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
-                "Montant total dû": {"number": round(total_amount, 2)},
+                "Montant dû Famille/Prof": {"number": round(total_amount, 2)},
                 "Heures": {"rich_text": [{"text": {"content": f"{total_hours:.1f}h"}}]},
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
@@ -612,7 +612,7 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
                 return r.json() if r.text else {"ok": True}
             
             # Log d'erreur pour debug
-            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:300]}")
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
 
         def get_children(block_id):
@@ -760,7 +760,7 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
             famille_prop = props.get("Famille", {})
             if famille_prop.get("title"):
                 famille = famille_prop["title"][0]["plain_text"] if famille_prop["title"] else ""
-            montant = props.get("Montant total dû", {}).get("number", 0) or 0
+            montant = props.get("Montant dû Famille/Prof", {}).get("number", 0) or props.get("Montant total dû", {}).get("number", 0) or 0
             if famille:
                 existing_keys.add((normalize_name(famille), round(float(montant), 2)))
 
@@ -804,7 +804,7 @@ def run_add_notion_rows_from_invoice_folder_no_split(secrets, data, invoice_fold
 
             properties = {
                 "Famille": {"title": [{"text": {"content": family_name}}]},
-                "Montant total dû": {"number": amount},
+                "Montant dû Famille/Prof": {"number": amount},
                 "Payé ?": {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
@@ -954,7 +954,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                 return r.json() if r.text else {"ok": True}
             
             # Log d'erreur pour debug
-            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:300]}")
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         def get_children(block_id):
@@ -1379,7 +1379,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                 
                 # Mettre à jour la ligne famille
                 properties = {
-                    "Montant total dû": {"number": round(totals["amount"], 2)},
+                    "Montant dû Famille/Prof": {"number": round(totals["amount"], 2)},
                     "Heures": {"rich_text": [{"text": {"content": f"{totals['hours']:.1f}h"}}]},
                 }
                 
@@ -1568,7 +1568,7 @@ def run_scan_and_compare(secrets, data, invoice_folder_path, callback=None):
                 return r.json() if r.text else {"ok": True}
             
             # Log d'erreur pour debug
-            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:300]}")
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         update(5, "📁 Chargement de payment_links_output.json...")
