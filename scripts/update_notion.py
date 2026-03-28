@@ -64,7 +64,7 @@ def _pick_first_existing(db_properties, *names):
     return names[0] if names else None
 
 
-def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
+def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, familles_euros=None):
     """
     Ajoute les nouvelles lignes dans Notion ET crée les sous-pages profs.
     
@@ -117,6 +117,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             
             if r.status_code in [200, 201]:
                 return r.json() if r.text else {"ok": True}
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         def get_children(block_id):
@@ -294,7 +295,15 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         metadata_db = secrets["notion"].get("metadata_database_id")
         next_id = 1
         
-        if metadata_db:
+        # D'abord scanner le max id depuis les lignes existantes (plus fiable)
+        if existing:
+            for row in existing.get("results", []):
+                pid = row["properties"].get("id paiements", {}).get("number", 0) or 0
+                if pid >= next_id:
+                    next_id = pid + 1
+        
+        # Fallback: metadata DB
+        if next_id <= 1 and metadata_db:
             meta = notion_request("POST", f"databases/{metadata_db}/query", {})
             if meta:
                 for row in meta.get("results", []):
@@ -303,6 +312,8 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                     if cle and cle[0].get("plain_text", "").strip() == "last_payment_id":
                         next_id = props.get("Valeur", {}).get("number", 0) + 1
                         break
+        
+        print(f"🔍 DEBUG: next_id = {next_id}")
         
         # ===========================
         # ÉTAPE 3: Charger les pages profs existantes
@@ -321,61 +332,122 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         added = 0
         skipped = 0
         pages_created = 0
+        api_failed = 0
+        no_lessons = 0
         total = len(data)
         current = 0
+        
+        # Build set of EUR families for devise detection
+        euro_parents = set()
+        if familles_euros:
+            euro_parents = {normalize_name(n) for n in familles_euros}
+        
+        print(f"🔍 DEBUG: {total} familles, {len(euro_parents)} familles EUR")
         
         for fam_id, fam in data.items():
             current += 1
             progress = int(20 + (current / total * 60))
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or ""
-            parent_email = fam.get("parent_email") or ""
             total_amount = fam.get("total_courses", 0)
             
-            # Vérifier doublon
-            key = (parent_name.lower(), round(total_amount, 2))
-            if key in existing_keys:
-                skipped += 1
+            if not parent_name:
                 continue
             
             update(progress, f"➕ {parent_name}")
             
             lessons = fam.get("lessons", [])
-            
-            # Filtrer les absences
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
             
             if not lessons_filtered:
+                no_lessons += 1
                 continue
             
-            # Calculer le total des heures
+            # Recalculer le total si 0
+            if total_amount <= 0:
+                total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
+            
+            # Heures
             total_hours = sum((L.get("duration_min") or 0) / 60 for L in lessons_filtered)
             
-            # Trouver la date du premier cours
-            dates = [L.get("date") for L in lessons_filtered if L.get("date")]
-            first_date = min(dates) if dates else ""
+            # Profs et élèves
+            profs_list = []
+            eleves_list = []
+            for L in lessons_filtered:
+                t = (L.get("teacher") or "").strip()
+                if t and t not in profs_list:
+                    profs_list.append(t)
+                s = (L.get("student") or "").strip()
+                if s and s not in eleves_list:
+                    eleves_list.append(s)
             
-            # Convertir la date
-            date_iso = None
-            if first_date:
-                try:
-                    dt = datetime.strptime(first_date, "%d.%m.%Y")
-                    date_iso = dt.strftime("%Y-%m-%d")
-                except:
-                    pass
+            # Devise (depuis familles_euros ou depuis les données)
+            currency = (fam.get("currency") or "").upper()
+            if not currency:
+                if normalize_name(parent_name) in euro_parents:
+                    currency = "EUR"
+                else:
+                    currency = "CHF"
             
-            # Créer la page dans la DB Paiements
+            # Date cours factures = range (premier → dernier cours)
+            parsed_dates = []
+            for L in lessons_filtered:
+                d = L.get("date", "")
+                if d:
+                    try:
+                        parsed_dates.append(datetime.strptime(d, "%d.%m.%Y"))
+                    except:
+                        pass
+            
+            date_start_iso = None
+            date_end_iso = None
+            year_value = None
+            if parsed_dates:
+                first_dt = min(parsed_dates)
+                last_dt = max(parsed_dates)
+                date_start_iso = first_dt.strftime("%Y-%m-%d")
+                date_end_iso = last_dt.strftime("%Y-%m-%d")
+                year_value = first_dt.year
+            
+            # Invoice date = aujourd'hui (date de création de la facture)
+            today_iso = datetime.today().strftime("%Y-%m-%d")
+            
+            # Construire les propriétés Notion
             properties = {
                 "Famille": {"title": [{"text": {"content": parent_name}}]},
-                "Email parent": {"email": parent_email} if parent_email else {"rich_text": []},
                 amount_prop_name: {"number": round(total_amount, 2)},
-                "Heures": {"number": round(total_hours, 2)},
+                "Heures": {"rich_text": [{"text": {"content": f"{total_hours:.1f}h"}}]},
                 paid_prop_name: {"checkbox": False},
                 "id paiements": {"number": next_id},
             }
             
-            if date_iso:
-                properties["Date cours factures"] = {"date": {"start": date_iso}}
+            # Professeur
+            if profs_list:
+                properties["Professeur"] = {"rich_text": [{"text": {"content": ", ".join(profs_list)}}]}
+            
+            # Élève
+            if eleves_list:
+                properties["Élève"] = {"rich_text": [{"text": {"content": ", ".join(eleves_list)}}]}
+            
+            # Devise
+            if currency:
+                properties["Devise"] = {"rich_text": [{"text": {"content": currency}}]}
+            
+            # Année
+            if year_value:
+                properties["Année"] = {"number": year_value}
+            
+            # Date cours factures (range start→end)
+            if date_start_iso:
+                date_prop = {"start": date_start_iso}
+                if date_end_iso and date_end_iso != date_start_iso:
+                    date_prop["end"] = date_end_iso
+                properties["Date cours factures"] = {"date": date_prop}
+            
+            # Invoice date (date de création)
+            properties["Invoice date"] = {"date": {"start": today_iso}}
+            
+            print(f"  📤 {parent_name} | {total_amount:.2f} {currency} | {total_hours:.1f}h | id={next_id}")
             
             result = notion_request("POST", "pages", {
                 "parent": {"database_id": DB_PAIEMENTS},
@@ -385,7 +457,6 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
             if result:
                 added += 1
                 next_id += 1
-                existing_keys.add(key)
                 
                 # ===========================
                 # CRÉER LES SOUS-PAGES PROFS (sauf en mode no-split)
@@ -450,6 +521,9 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
                             if current_title is None:  # Page nouvellement créée
                                 update_student_page(student_id, student_name, payments)
                                 pages_created += 1
+            else:
+                api_failed += 1
+                print(f"  ❌ ÉCHEC API pour {parent_name}")
         
         # ===========================
         # ÉTAPE 5: Mettre à jour le dashboard
@@ -477,12 +551,17 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False):
         
         update(100, "✅ Terminé !")
         
+        print(f"📊 RÉSULTAT: added={added}, no_lessons={no_lessons}, api_failed={api_failed}, total={total}")
+        
         return {
             "success": True,
             "added": added,
             "skipped": skipped,
             "pages_created": pages_created,
-            "next_id": next_id
+            "next_id": next_id,
+            "api_failed": api_failed,
+            "no_lessons": no_lessons,
+            "total_families": total,
         }
         
     except Exception as e:
@@ -544,6 +623,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             
             if r.status_code in [200, 201]:
                 return r.json() if r.text else {"ok": True}
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         def get_children(block_id):
@@ -973,7 +1053,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                 # Mettre à jour la ligne famille
                 properties = {
                     amount_prop_name: {"number": round(totals["amount"], 2)},
-                    "Heures": {"number": round(totals["hours"], 2)},
+                    "Heures": {"rich_text": [{"text": {"content": f"{totals['hours']:.1f}h"}}]},
                 }
                 
                 result = notion_request("PATCH", f"pages/{page_id}", {"properties": properties})
@@ -1159,6 +1239,7 @@ def run_scan_and_compare(secrets, data, invoice_folder_path, callback=None):
             
             if r.status_code in [200, 201]:
                 return r.json() if r.text else {"ok": True}
+            print(f"⚠️ Notion {method} {endpoint} → {r.status_code}: {r.text[:500]}")
             return None
         
         update(5, "📁 Chargement de payment_links_output.json...")
