@@ -363,9 +363,8 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
                 no_lessons += 1
                 continue
             
-            # Recalculer le total si 0
-            if total_amount <= 0:
-                total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
+            # Recalculer le total depuis les leçons FILTRÉES (total_courses inclut les absences !)
+            total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
             
             # Heures
             total_hours = sum((L.get("duration_min") or 0) / 60 for L in lessons_filtered)
