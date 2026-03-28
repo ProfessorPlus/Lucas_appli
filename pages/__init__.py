@@ -1512,6 +1512,14 @@ def page_reminders(ctx):
     latest_folder_for_reminders = _invoice_folder_choices()[0][1] if _invoice_folder_choices() else None
     latest_folder_path_for_reminders = _ensure_local_invoice_folder(latest_folder_for_reminders) if latest_folder_for_reminders else None
     unpaid_data_for_matching = _try_load_data(ctx)
+    
+    # Enrichir les emails depuis les données TutorBird fraîches si possible
+    # (recharge depuis Drive pour avoir les dernières mises à jour)
+    if not unpaid_data_for_matching:
+        try:
+            unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
+        except Exception:
+            pass
 
     if st.button("🔍 Charger les familles non payées depuis Notion", width="stretch", key="load_unpaid_notion"):
         with st.spinner("Chargement depuis Notion..."):

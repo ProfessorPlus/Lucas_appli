@@ -455,12 +455,20 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
             unpaid = [r for r in matching_rows if not r["paid"]]
             paid = [r for r in matching_rows if r["paid"]]
             
-            # Détecter les doublons
+            # Détecter les vrais doublons (lignes identiques sur les 4 colonnes)
             if len(unpaid) > 1:
-                duplicates_warning.append(
-                    f"{sp_family} | {sp_teacher} | {sp_student} | {amount} {payment['currency']} "
-                    f"→ {len(unpaid)} lignes non payées trouvées"
-                )
+                # Grouper par (prof+élève+invoice_date+montant) pour trouver les vrais doublons
+                seen_keys = {}
+                for r in unpaid:
+                    key = (r.get("professeur", "").lower(), r.get("eleve", "").lower(), r.get("invoice_date", ""), round(r["montant"], 2))
+                    seen_keys.setdefault(key, []).append(r)
+                
+                for key, rows in seen_keys.items():
+                    if len(rows) > 1:
+                        duplicates_warning.append(
+                            f"{rows[0]['famille']} | {key[0]} | {key[1]} | {key[3]} "
+                            f"→ {len(rows)} lignes identiques non payées"
+                        )
             
             if unpaid:
                 chosen = unpaid[0]  # pid le plus haut
