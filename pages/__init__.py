@@ -1586,10 +1586,40 @@ def page_reminders(ctx):
         month_name = ctx["MONTHS_FR"][datetime.now().month - 1]
         year = datetime.now().year
     
-    template = get_default_reminder_template(month_name, year)
+    template_fr = get_default_reminder_template(month_name, year)
     
-    subject = st.text_input("📝 Sujet", value=template["subject"], key="reminder_subject")
-    body = st.text_area("✉️ Message", value=template["body"], height=250, key="reminder_body")
+    # Template anglais
+    MONTHS_EN = ["January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December"]
+    month_idx = ctx["MONTHS_FR"].index(month_name) if month_name in ctx["MONTHS_FR"] else datetime.now().month - 1
+    month_en = MONTHS_EN[month_idx]
+    
+    template_en = {
+        "subject": f"Reminder - Outstanding invoice(s) - Tutoring - {month_en} {year}",
+        "body": f"""Hello,
+
+I hope you are well.
+
+This is a friendly reminder regarding the outstanding tutoring invoice(s) for {month_en} {year}.
+
+Please find attached the corresponding invoice(s). You can pay directly by clicking the "Pay online" button in the PDF.
+
+Please proceed with payment at your earliest convenience.
+
+Do not hesitate to contact me if you have any questions or if you have already made the payment.
+
+Best regards,
+Professor+
+"""
+    }
+    
+    tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
+    with tab_fr:
+        subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="reminder_subject_fr")
+        body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="reminder_body_fr")
+    with tab_en:
+        subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="reminder_subject_en")
+        body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="reminder_body_en")
     
     st.markdown("---")
     
@@ -1702,7 +1732,7 @@ def page_sync(ctx):
     # Toggle no-split (persistant, ne dépend plus de session_state volatile)
     no_split_sync = st.toggle(
         "🏦 Mode no-split (tout sur mon compte, pas de split par prof)",
-        value=st.session_state.get("no_split_mode_active", False),
+        value=True,
         key="sync_no_split_toggle",
         help="Activez si vous utilisez le compte Stripe no-split (sans transfert aux profs)"
     )

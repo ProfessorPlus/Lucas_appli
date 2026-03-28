@@ -255,14 +255,24 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                     return bool(props.get(name, {}).get("checkbox", False))
             return False
 
+        def get_date_property(props, prop_name):
+            prop = props.get(prop_name, {})
+            date_val = prop.get("date")
+            if date_val and date_val.get("start"):
+                return date_val["start"][:10]  # YYYY-MM-DD
+            return ""
+
         def parse_notion_row(row):
             props = row.get("properties", {})
             return {
                 "page_id": row["id"],
                 "famille": get_text_property(props, "Famille"),
-                "email": get_email_property(props, "Email parent"),
+                "professeur": get_text_property(props, "Professeur"),
+                "eleve": get_text_property(props, "Élève"),
+                "invoice_date": get_date_property(props, "Invoice date"),
                 "montant": get_number_property(props, "Montant dû Famille/Prof", "Montant total dû"),
                 "paid": get_checkbox_property(props, "Payé ?", "Payé"),
+                "pid": int(get_number_property(props, "id paiements") or 0),
             }
 
         def build_patch_properties(db_properties, payment):
@@ -339,6 +349,18 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                     montant_net = amount
 
             identity = _extract_charge_identity(charge)
+            meta = _metadata_dict(charge)
+            
+            # Extraire prof, élève, invoice_date depuis les metadata Stripe
+            teacher_names = meta.get("teacher_names", "")
+            product_name = meta.get("product_name", "")
+            invoice_date = meta.get("invoice_date", "")
+            
+            # Extraire le nom de l'élève depuis product_name: "Soutien scolaire | Forgione Alexander"
+            student_name = ""
+            if product_name and "|" in product_name:
+                student_name = product_name.split("|", 1)[1].strip()
+            
             stripe_payments.append({
                 "charge_id": getattr(charge, "id", ""),
                 "family_name": identity.get("family_name", ""),
@@ -347,6 +369,9 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 "montant_net": round(montant_net, 2),
                 "currency": currency,
                 "date_payment": datetime.fromtimestamp(getattr(charge, "created", int(time.time()))).strftime("%Y-%m-%d"),
+                "teacher": teacher_names,
+                "student": student_name,
+                "invoice_date": invoice_date,
             })
 
         update(30, f"📊 {len(stripe_payments)} paiement(s) Stripe trouvé(s)")
@@ -361,8 +386,8 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
         notion_rows = [r for r in notion_rows if r["famille"]]
         update(55, f"📊 {len(notion_rows)} ligne(s) Notion trouvée(s)")
 
-        # 3) Matching
-        update(60, "🔄 Matching Stripe ↔ Notion (famille + montant)...")
+        # 3) Matching par 4 colonnes: Professeur + Élève + Invoice date + Montant
+        update(60, "🔄 Matching Stripe ↔ Notion (Prof + Élève + Invoice date + Montant)...")
         synced = 0
         already_paid = 0
         no_match = []
@@ -373,49 +398,85 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
         for i, payment in enumerate(stripe_payments):
             progress = int(60 + (i / max(total, 1) * 35))
             amount = round(payment["amount"], 2)
-            family_name = payment.get("family_name", "")
-            email = (payment.get("email") or "").strip().lower()
-
-            candidates = [
-                row for row in notion_rows
-                if abs(round(row["montant"], 2) - amount) < 0.01
-            ]
-            unpaid_candidates = [row for row in candidates if not row["paid"] and row["page_id"] not in matched_ids]
-            paid_candidates = [row for row in candidates if row["paid"]]
-
-            name_matches = [row for row in unpaid_candidates if family_name and names_match(row["famille"], family_name)]
-            email_matches = [row for row in unpaid_candidates if email and (row.get("email") or "").strip().lower() == email]
-
-            chosen = None
-            if len(name_matches) == 1:
-                chosen = name_matches[0]
-            elif len(name_matches) > 1:
-                duplicates_warning.append(f"{family_name or email or 'Paiement Stripe'} | {amount} {payment['currency']} → {len(name_matches)} lignes possibles (nom + montant)")
-            elif len(email_matches) == 1:
-                chosen = email_matches[0]
-            elif len(email_matches) > 1:
-                duplicates_warning.append(f"{email} | {amount} {payment['currency']} → {len(email_matches)} lignes possibles (email + montant)")
-            elif len(unpaid_candidates) == 1:
-                # fallback utile si le nom Stripe est vide ou différent mais que le montant est unique
-                chosen = unpaid_candidates[0]
-            elif len(unpaid_candidates) > 1:
-                duplicates_warning.append(f"{family_name or email or 'Paiement Stripe'} | {amount} {payment['currency']} → {len(unpaid_candidates)} lignes possibles (montant unique impossible)")
-
-            if chosen:
-                update(progress, f"✅ {family_name or chosen['famille']}")
+            sp_teacher = payment.get("teacher", "")
+            sp_student = payment.get("student", "")
+            sp_invoice_date = payment.get("invoice_date", "")
+            sp_family = payment.get("family_name", "")
+            
+            print(f"  🔍 Stripe: {sp_family} | prof={sp_teacher} | élève={sp_student} | date={sp_invoice_date} | {amount} {payment['currency']}")
+            
+            # Trouver les lignes Notion qui matchent les 4 critères
+            matching_rows = []
+            for row in notion_rows:
+                if row["page_id"] in matched_ids:
+                    continue
+                
+                # 1. Montant (tolérance 0.01)
+                if abs(round(row["montant"], 2) - amount) >= 0.01:
+                    continue
+                
+                # 2. Invoice date
+                if sp_invoice_date and row.get("invoice_date"):
+                    if row["invoice_date"] != sp_invoice_date:
+                        continue
+                
+                # 3. Professeur (au moins un prof en commun)
+                prof_match = True
+                if sp_teacher and row.get("professeur"):
+                    # Les profs peuvent être séparés par virgule
+                    notion_profs = {p.strip().lower() for p in row["professeur"].split(",")}
+                    stripe_profs = {p.strip().lower() for p in sp_teacher.split("/")}
+                    prof_match = bool(notion_profs & stripe_profs) or any(
+                        names_match(np, sp) for np in notion_profs for sp in stripe_profs
+                    )
+                    if not prof_match:
+                        continue
+                
+                # 4. Élève (nom de l'élève dans le product_name)
+                eleve_match = True
+                if sp_student and row.get("eleve"):
+                    eleve_match = names_match(row["eleve"], sp_student)
+                    if not eleve_match:
+                        # Essayer match partiel (l'élève Notion peut avoir plusieurs noms)
+                        notion_eleves = row["eleve"].replace("&", ",")
+                        for ne in notion_eleves.split(","):
+                            if names_match(ne.strip(), sp_student):
+                                eleve_match = True
+                                break
+                    if not eleve_match:
+                        continue
+                
+                matching_rows.append(row)
+            
+            # Trier par pid décroissant (le plus récent en premier)
+            matching_rows.sort(key=lambda r: r.get("pid", 0), reverse=True)
+            
+            # Séparer payés et non payés
+            unpaid = [r for r in matching_rows if not r["paid"]]
+            paid = [r for r in matching_rows if r["paid"]]
+            
+            # Détecter les doublons
+            if len(unpaid) > 1:
+                duplicates_warning.append(
+                    f"{sp_family} | {sp_teacher} | {sp_student} | {amount} {payment['currency']} "
+                    f"→ {len(unpaid)} lignes non payées trouvées"
+                )
+            
+            if unpaid:
+                chosen = unpaid[0]  # pid le plus haut
+                update(progress, f"✅ {sp_family or chosen['famille']}")
                 patch_props = build_patch_properties(db_properties, payment)
-                if not patch_props:
-                    return {"success": False, "error": "La base Notion ne contient ni 'Payé ?' / 'Payé' ni les propriétés attendues pour la mise à jour."}
                 result = notion_request("PATCH", f"pages/{chosen['page_id']}", {"properties": patch_props})
                 if result:
                     synced += 1
                     matched_ids.add(chosen["page_id"])
+                    print(f"    ✅ Marqué payé: {chosen['famille']} (pid={chosen.get('pid')})")
                 else:
-                    no_match.append(f"{family_name or chosen['famille']} | {amount} {payment['currency']} (échec mise à jour Notion)")
-            elif paid_candidates:
+                    no_match.append(f"{sp_family} | {amount} {payment['currency']} (échec API)")
+            elif paid:
                 already_paid += 1
             else:
-                no_match.append(f"{family_name or email or 'Paiement Stripe sans nom'} | {amount} {payment['currency']}")
+                no_match.append(f"{sp_family} | {sp_teacher} | {sp_student} | {amount} {payment['currency']}")
 
         # 4) Dashboard
         update(95, "📊 Mise à jour du dashboard...")

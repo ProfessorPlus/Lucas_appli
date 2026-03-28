@@ -526,7 +526,30 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
                 print(f"  ❌ ÉCHEC API pour {parent_name}")
         
         # ===========================
-        # ÉTAPE 5: Mettre à jour le dashboard
+        # ÉTAPE 5: Mettre à jour System-Metadata
+        # ===========================
+        if added > 0 and metadata_db:
+            update(85, "📊 Mise à jour System-Metadata...")
+            # Chercher la ligne last_payment_id et la mettre à jour
+            meta = notion_request("POST", f"databases/{metadata_db}/query", {})
+            if meta:
+                for row in meta.get("results", []):
+                    props = row["properties"]
+                    cle = props.get("Clé", {}).get("title", [])
+                    if cle and cle[0].get("plain_text", "").strip() == "last_payment_id":
+                        old_val = props.get("Valeur", {}).get("number", 0) or 0
+                        new_val = next_id - 1  # next_id a déjà été incrémenté
+                        notion_request("PATCH", f"pages/{row['id']}", {
+                            "properties": {
+                                "Valeur": {"number": new_val},
+                                "Valeur précédente": {"number": old_val},
+                            }
+                        })
+                        print(f"  ✅ Metadata: last_payment_id {old_val} → {new_val}")
+                        break
+        
+        # ===========================
+        # ÉTAPE 6: Mettre à jour le dashboard
         # ===========================
         update(90, "📊 Mise à jour du dashboard...")
         
