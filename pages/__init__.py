@@ -2914,7 +2914,7 @@ def page_profs(ctx):
             safe_name = tname.replace(" ", "_")
             filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
 
-            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path)
+            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end)
             st.download_button(
                 label=f"📥 Télécharger le PDF de {tname}",
                 data=pdf_bytes,
@@ -2938,6 +2938,7 @@ def page_profs(ctx):
                     teachers, mois_label,
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
+                    extraction_end_date=extraction_end,
                 )
                 if zip_bytes:
                     st.session_state.prof_zip_bytes = zip_bytes
@@ -2952,6 +2953,7 @@ def page_profs(ctx):
                     teachers, mois_label,
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
+                    extraction_end_date=extraction_end,
                 )
                 if pdf_bytes:
                     st.session_state.prof_pdf_bytes = pdf_bytes
