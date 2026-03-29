@@ -1661,6 +1661,18 @@ Professor+
         family_options = [f["parent_name"] for f in with_email]
         selected_names = st.multiselect("Sélectionner les familles", family_options, key="reminder_select_families")
     
+    # Exclusion de familles
+    available_for_exclusion = selected_names if selected_names else [f["parent_name"] for f in with_email]
+    excluded_names = st.multiselect(
+        "Ne pas envoyer à ces familles",
+        available_for_exclusion,
+        key="reminder_excluded_families"
+    )
+    final_names = [name for name in available_for_exclusion if name not in excluded_names]
+    # Convertir en selected_names pour le reste du code
+    if excluded_names:
+        selected_names = final_names
+    
     # Charger les données TutorBird pour le matching des factures PDF
     data = _try_load_data(ctx)
     if not data:
