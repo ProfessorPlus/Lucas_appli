@@ -26,10 +26,13 @@ ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E
 FALLBACK_CHF_EUR = 0.94
 
 
-@lru_cache(maxsize=1)
-def _fetch_chf_eur_rate():
-    today = _date.today()
-    prev_y, prev_m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+@lru_cache(maxsize=36)
+def _fetch_chf_eur_rate(target_year=None, target_month=None):
+    if target_year and target_month:
+        prev_y, prev_m = target_year, target_month
+    else:
+        today = _date.today()
+        prev_y, prev_m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
     last_day = _calendar.monthrange(prev_y, prev_m)[1]
     sd = f"{prev_y:04d}-{prev_m:02d}-01"
     ed = f"{prev_y:04d}-{prev_m:02d}-{last_day:02d}"
@@ -60,7 +63,23 @@ def _fetch_chf_eur_rate():
 
 
 def require_chf_to_eur_factor(extraction_end_date=None):
-    rate, source = _fetch_chf_eur_rate()
+    target_year = None
+    target_month = None
+    if extraction_end_date:
+        try:
+            if isinstance(extraction_end_date, str):
+                from datetime import datetime as _dt
+                d = _dt.strptime(extraction_end_date.strip()[:10], "%Y-%m-%d").date()
+            elif isinstance(extraction_end_date, _date):
+                d = extraction_end_date
+            else:
+                d = extraction_end_date.date() if hasattr(extraction_end_date, 'date') else None
+            if d:
+                target_year = d.year
+                target_month = d.month
+        except Exception:
+            pass
+    rate, source = _fetch_chf_eur_rate(target_year, target_month)
     return rate, source, rate
 
 
