@@ -1526,9 +1526,25 @@ def page_reminders(ctx):
     # ===========================
     st.markdown("### 📋 Étape 1 — Familles non payées (Notion)")
     
+    latest_folder_for_reminders = _invoice_folder_choices()[0][1] if _invoice_folder_choices() else None
+    latest_folder_path_for_reminders = _ensure_local_invoice_folder(latest_folder_for_reminders) if latest_folder_for_reminders else None
+    unpaid_data_for_matching = _try_load_data(ctx)
+    
+    # Enrichir les emails depuis les données TutorBird fraîches si possible
+    # (recharge depuis Drive pour avoir les dernières mises à jour)
+    if not unpaid_data_for_matching:
+        try:
+            unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
+        except Exception:
+            pass
+
     if st.button("🔍 Charger les familles non payées depuis Notion", width="stretch", key="load_unpaid_notion"):
         with st.spinner("Chargement depuis Notion..."):
-            result = get_unpaid_families_from_notion(secrets)
+            result = get_unpaid_families_from_notion(
+                secrets,
+                data=unpaid_data_for_matching,
+                invoice_folder=latest_folder_path_for_reminders,
+            )
             if result["success"]:
                 st.session_state.unpaid_families = result["unpaid"]
                 st.success(f"✅ {len(result['unpaid'])} famille(s) avec paiement en attente")
@@ -1594,157 +1610,168 @@ def page_reminders(ctx):
     else:
         month_name = ctx["MONTHS_FR"][datetime.now().month - 1]
         year = datetime.now().year
+    
+    template_fr = get_default_reminder_template(month_name, year)
+    
+    # Template anglais
+    MONTHS_EN = ["January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December"]
+    month_idx = ctx["MONTHS_FR"].index(month_name) if month_name in ctx["MONTHS_FR"] else datetime.now().month - 1
+    month_en = MONTHS_EN[month_idx]
+    
+    template_en = {
+        "subject": f"Reminder - Outstanding invoice(s) - Tutoring - {month_en} {year}",
+        "body": f"""Hello,
 
-    template = get_default_reminder_template(month_name, year)
+I hope you are well.
 
-    subject = st.text_input("📝 Sujet", value=template["subject"], key="reminder_subject")
-    body = st.text_area("✉️ Message", value=template["body"], height=250, key="reminder_body")
+This is a friendly reminder regarding the outstanding tutoring invoice(s) for {month_en} {year}.
 
+Please find attached the corresponding invoice(s). You can pay directly by clicking the "Pay online" button in the PDF.
+
+Please proceed with payment at your earliest convenience.
+
+Do not hesitate to contact me if you have any questions or if you have already made the payment.
+
+Best regards,
+Professor+
+"""
+    }
+    
+    tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
+    with tab_fr:
+        subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="reminder_subject_fr")
+        body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="reminder_body_fr")
+    with tab_en:
+        subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="reminder_subject_en")
+        body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="reminder_body_en")
+    
     st.markdown("---")
-
+    
     # Sélection des familles
     st.markdown("### 📬 Étape 4 — Envoi")
-
+    
     col1, col2 = st.columns(2)
     with col1:
-        send_mode = st.radio(
-            "Envoyer à :",
-            ["Toutes les familles non payées", "Sélection personnalisée"],
-            key="reminder_send_mode"
-        )
+        send_mode = st.radio("Envoyer à :", ["Toutes les familles non payées", "Sélection personnalisée"], key="reminder_send_mode")
     with col2:
         send_test = st.checkbox("📧 Envoyer d'abord à moi-même (test)", value=True, key="reminder_test")
-
-    family_options = [f["parent_name"] for f in with_email]
-    selected_names = family_options.copy()
+    
+    selected_names = None
     if send_mode == "Sélection personnalisée":
-        selected_names = st.multiselect(
-            "Sélectionner les familles",
-            family_options,
-            default=family_options,
-            key="reminder_select_families"
-        )
-
-    excluded_reminder_names = st.multiselect(
-        "Ne pas envoyer à ces familles",
-        selected_names,
-        key="reminder_excluded_families"
-    )
-    selected_names = [name for name in selected_names if name not in excluded_reminder_names]
-
+        family_options = [f["parent_name"] for f in with_email]
+        selected_names = st.multiselect("Sélectionner les familles", family_options, key="reminder_select_families")
+    
     # Charger les données TutorBird pour le matching des factures PDF
     data = _try_load_data(ctx)
     if not data:
         st.caption("💡 Les données TutorBird ne sont pas chargées. Les factures PDF ne seront pas jointes automatiquement.")
-
+    
     # ===========================
     # ENVOI TEST
     # ===========================
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch", key="send_reminder_test"):
-            if not selected_names:
-                st.warning("⚠️ Aucune famille sélectionnée pour l'envoi.")
-            else:
-                if not folder_path:
-                    st.warning("⚠️ Aucun dossier de factures sélectionné — le rappel sera envoyé sans pièce jointe.")
-
-                progress = st.progress(0)
-                status = st.empty()
-
-                def callback(p, m):
-                    progress.progress(p)
-                    status.info(m)
-
-                result = run_send_reminders(
-                    secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
-                    custom_subject=subject, custom_body=body,
-                    selected_families=selected_names,
-                    send_to_test=True, callback=callback
-                )
-
-                if result["success"]:
-                    st.success(f"✅ Test envoyé à {gmail_config['email']} ({result.get('sent', 0)} rappel(s))")
-                else:
-                    st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
-
-    # ===========================
-    # ENVOI RÉEL
-    # ===========================
-    if st.button("📧 Envoyer les rappels", type="primary", width="stretch", key="send_reminders_real"):
-        if not selected_names:
-            st.warning("⚠️ Aucune famille sélectionnée pour l'envoi.")
-        else:
             if not folder_path:
-                st.warning("⚠️ Aucun dossier de factures sélectionné — les rappels seront envoyés sans pièce jointe.")
-
-            if not with_email:
-                st.error("❌ Aucune famille avec email à relancer.")
-                return
-
+                st.warning("⚠️ Aucun dossier de factures sélectionné — le rappel sera envoyé sans pièce jointe.")
+            
             progress = st.progress(0)
             status = st.empty()
-
+            
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
-
+            
             result = run_send_reminders(
                 secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
                 custom_subject=subject, custom_body=body,
                 selected_families=selected_names,
-                send_to_test=False, callback=callback
+                send_to_test=True, callback=callback
             )
-
+            
             if result["success"]:
-                sent = result.get("sent", 0)
-                total = result.get("total", 0)
-                errors = result.get("errors", [])
-
-                if errors:
-                    st.warning(f"⚠️ **{sent}/{total}** rappels envoyés — **{len(errors)}** erreur(s)")
-                else:
-                    st.success(f"✅ **{sent}/{total}** rappels envoyés avec succès !")
-
-                if sent > 0:
-                    with st.expander(f"✅ {sent} email(s) envoyé(s)"):
-                        for name in selected_names[:sent]:
-                            st.write(f"• ✅ **{name}**")
-
-                if errors:
-                    with st.expander(f"❌ {len(errors)} erreur(s) d'envoi"):
-                        for err in errors:
-                            st.write(f"• {err}")
-
-                if without_email:
-                    with st.expander(f"⚠️ {len(without_email)} famille(s) sans email — non contactée(s)"):
-                        for f in without_email:
-                            st.write(f"• **{f['parent_name']}** — email manquant")
+                st.success(f"✅ Test envoyé à {gmail_config['email']} ({result.get('sent', 0)} rappel(s))")
             else:
                 st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
+    
+    # ===========================
+    # ENVOI RÉEL
+    # ===========================
+    if st.button("📧 Envoyer les rappels", type="primary", width="stretch", key="send_reminders_real"):
+        if not folder_path:
+            st.warning("⚠️ Aucun dossier de factures sélectionné — les rappels seront envoyés sans pièce jointe.")
+        
+        if not with_email:
+            st.error("❌ Aucune famille avec email à relancer.")
+            return
+        
+        progress = st.progress(0)
+        status = st.empty()
+        
+        def callback(p, m):
+            progress.progress(p)
+            status.info(m)
+        
+        result = run_send_reminders(
+            secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
+            custom_subject=subject, custom_body=body,
+            selected_families=selected_names,
+            send_to_test=False, callback=callback
+        )
+        
+        if result["success"]:
+            sent = result.get("sent", 0)
+            total = result.get("total", 0)
+            errors = result.get("errors", [])
+            
+            if errors:
+                st.warning(f"⚠️ **{sent}/{total}** rappels envoyés — **{len(errors)}** erreur(s)")
+            else:
+                st.success(f"✅ **{sent}/{total}** rappels envoyés avec succès !")
+            
+            # Rapport détaillé
+            if sent > 0:
+                families_sent = selected_names if selected_names else [f["parent_name"] for f in with_email]
+                with st.expander(f"✅ {sent} email(s) envoyé(s)"):
+                    for name in families_sent[:sent]:
+                        st.write(f"• ✅ **{name}**")
+            
+            if errors:
+                with st.expander(f"❌ {len(errors)} erreur(s) d'envoi"):
+                    for err in errors:
+                        st.write(f"• {err}")
+            
+            if without_email:
+                with st.expander(f"⚠️ {len(without_email)} famille(s) sans email — non contactée(s)"):
+                    for f in without_email:
+                        st.write(f"• **{f['parent_name']}** — email manquant")
+        else:
+            st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
 
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)
     
-    st.info("""
-    **À quoi sert cette synchronisation ?**
-    
-    Cette fonction récupère les paiements effectués sur Stripe et :
-    1. Marque automatiquement les lignes comme "Payé" dans Notion
-    2. Met à jour les tableaux dans les pages des professeurs
-    3. Met à jour les récapitulatifs de paiements
-    4. Met à jour le dashboard global
-    
-    **Matching par :** Prof + Élève + Montant (via extraction du reçu Stripe)
-    """)
-    
     secrets = ctx["load_secrets"]()
     latest = ctx["get_latest_invoice_folder"]()
     
-    # Détecter le mode no-split
-    is_no_split = st.session_state.get("no_split_mode_active", False)
+    # Toggle no-split (persistant, ne dépend plus de session_state volatile)
+    no_split_sync = st.toggle(
+        "🏦 Mode no-split (tout sur mon compte, pas de split par prof)",
+        value=True,
+        key="sync_no_split_toggle",
+        help="Activez si vous utilisez le compte Stripe no-split (sans transfert aux profs)"
+    )
     
-    if is_no_split:
-        st.info("🏦 **Mode sans transfert détecté** — Sync simplifiée (famille + montant, pas de pages profs)")
+    if no_split_sync:
+        st.info("""
+        **Mode no-split** — Matching par **Famille + Montant** (id paiement le plus haut).
+        Pas besoin de BeautifulSoup. Pas de pages profs.
+        """)
+    else:
+        st.info("""
+        **Mode normal** — Matching par **Prof + Élève + Montant** (via reçu Stripe).
+        Met à jour les pages des professeurs.
+        """)
     
     use_latest = st.checkbox("📅 Depuis le dernier dossier de factures", value=True)
     
@@ -1759,17 +1786,15 @@ def page_sync(ctx):
         progress = st.progress(0)
         status = st.empty()
         
-        if is_no_split:
-            # ===========================
-            # MODE NO-SPLIT : sync simplifiée
-            # ===========================
+        if no_split_sync:
+            # MODE NO-SPLIT
             def callback_ns(p, m):
                 progress.progress(p)
                 status.info(m)
             
             secrets_no_prof = ctx.get("load_secrets_no_prof", lambda: None)()
             if not secrets_no_prof:
-                st.error("❌ secrets_no_prof.yaml non trouvé !")
+                st.error("❌ Config no-split non trouvée ! Vérifiez la section stripe_no_split dans secrets.yaml.")
                 return
             
             result1 = run_sync_stripe_notion_no_split(secrets_no_prof, secrets, since_date, callback_ns)
@@ -1786,6 +1811,12 @@ def page_sync(ctx):
                 - {result1['total_not_found']} non trouvé(s) dans Notion
                 """)
                 
+                if result1.get("duplicates_warning"):
+                    with st.expander(f"⚠️ {len(result1['duplicates_warning'])} doublon(s) détecté(s) dans Notion", expanded=True):
+                        st.warning("Des lignes en double ont été trouvées. Vérifiez et supprimez les doublons manuellement.")
+                        for dw in result1["duplicates_warning"]:
+                            st.write(f"• {dw}")
+                
                 if result1.get("not_found"):
                     with st.expander("⚠️ Paiements non trouvés dans Notion"):
                         for nf in result1["not_found"]:
@@ -1794,9 +1825,7 @@ def page_sync(ctx):
                 st.error(f"❌ Erreur : {result1['error']}")
         
         else:
-            # ===========================
-            # MODE NORMAL : sync avec pages profs
-            # ===========================
+            # MODE NORMAL avec split
             def callback1(p, m):
                 progress.progress(int(p * 0.5))
                 status.info(f"[1/2] {m}")
@@ -1808,9 +1837,6 @@ def page_sync(ctx):
                 st.error(f"❌ Erreur sync Stripe : {result1['error']}")
                 return
             
-            # ===========================
-            # ÉTAPE 2: Mise à jour des pages profs
-            # ===========================
             def callback2(p, m):
                 progress.progress(50 + int(p * 0.5))
                 status.info(f"[2/2] {m}")
@@ -1821,9 +1847,6 @@ def page_sync(ctx):
             progress.progress(100)
             status.empty()
             
-            # ===========================
-            # Affichage des résultats
-            # ===========================
             if result1["success"] and result2["success"]:
                 st.success(f"""
                 ✅ **Synchronisation terminée**
@@ -1831,7 +1854,7 @@ def page_sync(ctx):
                 **Stripe → Notion :**
                 - {result1['synced']} paiement(s) synchronisé(s)
                 - {result1['already_paid']} déjà marqué(s) payé(s)
-                - {result1.get('student_unknown', 0)} élève(s) inconnu(s) (reçu vide)
+                - {result1.get('student_unknown', 0)} élève(s) inconnu(s)
                 - {result1['total_not_found']} non trouvé(s) dans Notion
                 
                 **Pages professeurs :**
@@ -1848,90 +1871,100 @@ def page_sync(ctx):
             elif result2 and not result2["success"]:
                 st.warning(f"""
                 ⚠️ **Sync Stripe OK, mais erreur pages profs**
-            
-            **Stripe → Notion :**
-            - {result1['synced']} paiement(s) synchronisé(s)
-            
-            **Erreur pages profs :**
-            {result2['error']}
-            """)
+                - {result1['synced']} paiement(s) synchronisé(s)
+                - Erreur pages profs : {result2['error']}
+                """)
 
-"""
-Nouvelle version de page_update avec 3 onglets :
-1. Ajouter toutes les lignes
-2. Mettre à jour certaines lignes  
-3. Vérifier & Compléter (NOUVEAU)
-"""
 
 def page_update(ctx):
     st.markdown('<div class="section-title">📤 Ajouter lignes Notion</div>', unsafe_allow_html=True)
     
-    data = ctx["load_extracted_data"]()
     secrets = ctx["load_secrets"]()
-    latest = ctx["get_latest_invoice_folder"]()
-    
-    if not data:
-        st.warning("⚠️ Aucune donnée extraite")
+    if not secrets:
+        st.error("❌ Fichier secrets.yaml non trouvé !")
         return
     
-    # Détecter le mode no-split
+    # Chargement des données avec fallback Drive
+    data = _try_load_data(ctx)
+    if not data:
+        st.warning("⚠️ **Données des familles non disponibles.**")
+        if st.button("📥 Charger depuis TutorBird / Drive", key="load_tb_update"):
+            with st.spinner("Chargement..."):
+                data = _try_load_data(ctx)
+                if data:
+                    st.success(f"✅ {len(data)} famille(s) chargées")
+                    st.rerun()
+                else:
+                    st.error("❌ Lancez d'abord une extraction TutorBird.")
+        return
+    
+    # Options no-split
     is_no_split = st.session_state.get("no_split_mode_active", False)
-    
     if is_no_split:
-        st.info("🏦 **Mode sans transfert actif** — Les lignes seront ajoutées sans colonne prof et sans sous-pages profs.")
+        st.info("🏦 **Mode sans transfert actif**")
     
-    # Onglets
-    default_tab = 1 if st.session_state.get("update_tab") == "selective" else 0
+    skip_prof_subpages = st.checkbox(
+        "🚫 Ne pas créer les sous-pages profs (Prof → Date → Élève)",
+        value=True,
+        key="skip_prof_subpages_update"
+    )
+    effective_no_split = is_no_split or skip_prof_subpages
+    
     tab1, tab2, tab3 = st.tabs(["➕ Ajouter toutes les lignes", "🔄 Mettre à jour certaines lignes", "🔍 Ajouter ligne(s) manquante(s)"])
     
-    # ===========================
-    # TAB 1: Ajouter toutes les lignes
-    # ===========================
     with tab1:
-        if is_no_split:
-            st.info(f"""
-            **Cette action va :**
-            1. Ajouter **{len(data)}** lignes dans la base de données Paiements
-            2. **Pas de sous-pages profs** (mode sans transfert)
-            
-            📁 Basé sur le dernier dossier : **{latest['name'] if latest else 'N/A'}**
-            
-            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
-            """)
-        else:
-            st.info(f"""
-            **Cette action va :**
-            1. Ajouter **{len(data)}** lignes dans la base de données Paiements
-            2. Créer les sous-pages dans les pages des professeurs (Prof → Date → Élève)
-            
-            📁 Basé sur le dernier dossier : **{latest['name'] if latest else 'N/A'}**
-            
-            ⚠️ Les lignes déjà existantes (même famille + même montant) seront ignorées.
-            """)
+        st.markdown("### 📁 Dossier de travail")
+        mode_t1, selected_folder_t1 = _render_invoice_folder_selector("update_folder_mode_t1", "update_folder_select_t1", default_to_latest=False)
+        
+        folder_name_t1 = "N/A"
+        if mode_t1 == "Utiliser un dossier existant" and selected_folder_t1:
+            folder_name_t1 = selected_folder_t1.get("month", "N/A")
+        elif mode_t1 != "Utiliser un dossier existant":
+            st.warning("⚠️ Sélectionnez un dossier existant.")
+        
+        st.markdown("---")
+        st.info(f"""
+        **Cette action va :**
+        1. Ajouter **{len(data)}** lignes dans la base de données Paiements
+        2. Avec Professeur, Élève, Devise, Année, Date cours (range), Invoice date
+        
+        📁 Dossier : **{folder_name_t1}**
+        """)
         
         if st.button("📤 Ajouter les lignes", type="primary", width="stretch", key="add_all_notion"):
+            familles_euros = ctx["load_familles_euros"]()
             progress = st.progress(0)
             status = st.empty()
-            
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
             
-            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=is_no_split)
+            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros)
             
             if result["success"]:
-                st.success(f"""
-                ✅ **Mise à jour terminée**
-                - {result['added']} ligne(s) ajoutée(s)
-                - {result['skipped']} ligne(s) ignorée(s) (doublons)
-                - {result['pages_created']} sous-page(s) prof créée(s)
-                """)
+                added = result.get('added', 0)
+                api_failed = result.get('api_failed', 0)
+                total_fam = result.get('total_families', 0)
+                
+                if added > 0:
+                    st.success(f"""
+                    ✅ **{added} ligne(s) ajoutée(s)** sur {total_fam} familles
+                    - {result.get('pages_created', 0)} sous-page(s) prof créée(s)
+                    """)
+                    if api_failed > 0:
+                        st.warning(f"⚠️ {api_failed} famille(s) n'ont pas pu être ajoutée(s) — voir les logs.")
+                else:
+                    st.warning(f"""
+                    ⚠️ **Aucune ligne ajoutée** — Diagnostic :
+                    - 📊 {total_fam} familles
+                    - 📭 {result.get('no_lessons', 0)} sans leçon
+                    - ❌ {api_failed} échec(s) API
+                    """)
+                    if api_failed > 0:
+                        st.error("Vérifiez les logs Streamlit pour les détails d'erreur.")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
     
-    # ===========================
-    # TAB 2: Mettre à jour certaines lignes
-    # ===========================
     with tab2:
         st.markdown("### 🔄 Mettre à jour certaines lignes Notion")
         
@@ -2792,10 +2825,15 @@ def page_profs(ctx):
     # ===========================
     # HEADER
     # ===========================
+    fx = recap.get("fx")
+    fx_rate = fx.get("factor", "?") if fx else "?"
+    fx_source = fx.get("source", "") if fx else ""
+    fx_display = f"1 CHF = {fx_rate} EUR" if isinstance(fx_rate, float) else "N/A"
+    
     st.markdown(f"""
     <div class="header-card">
         <h1>💰 Paie des professeurs — {mois_label}</h1>
-        <p>Taux de conversion : 1 CHF = 1.0896 EUR  •  Total : {grand_total:.2f} €</p>
+        <p>Taux de conversion : {fx_display} ({fx_source})  •  Total : {grand_total:.2f} €</p>
     </div>
     """, unsafe_allow_html=True)
 

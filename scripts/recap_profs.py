@@ -36,22 +36,30 @@ FALLBACK_CHF_EUR = 0.94  # ~approximate 2026 rate
 
 
 @lru_cache(maxsize=36)
-def fetch_chf_eur_rate() -> tuple[float, str]:
+def fetch_chf_eur_rate(target_year=None, target_month=None) -> tuple[float, str]:
     """
-    Fetches the CHF→EUR rate as the AVERAGE of the previous complete month.
+    Fetches the CHF→EUR rate as the AVERAGE of the target month.
+    If no target provided, uses the previous complete month.
+    
+    Args:
+        target_year: année du mois cible (ex: 2026)
+        target_month: mois cible 1-12 (ex: 1 pour Janvier)
+    
     Returns (rate, source_label).
     
     Chain: Frankfurter monthly avg → ECB SDMX → hardcoded fallback.
     """
     import calendar
     
-    today = date.today()
-    
-    # Mois précédent (complet)
-    if today.month == 1:
-        prev_y, prev_m = today.year - 1, 12
+    if target_year and target_month:
+        prev_y, prev_m = target_year, target_month
     else:
-        prev_y, prev_m = today.year, today.month - 1
+        today = date.today()
+        # Mois précédent (complet)
+        if today.month == 1:
+            prev_y, prev_m = today.year - 1, 12
+        else:
+            prev_y, prev_m = today.year, today.month - 1
     
     last_day = calendar.monthrange(prev_y, prev_m)[1]
     start_date = f"{prev_y:04d}-{prev_m:02d}-01"
@@ -190,6 +198,32 @@ def compute_teacher_recap(
     # FX: resolved lazily via fetch_chf_eur_rate()
     fx_info = None
     CHF_TO_EUR = None
+    
+    # Déterminer le mois cible pour le taux de change (= mois des cours extraits)
+    fx_target_year = None
+    fx_target_month = None
+    if extraction_end_date:
+        end_dt = _to_date(extraction_end_date)
+        if end_dt:
+            fx_target_year = end_dt.year
+            fx_target_month = end_dt.month
+    
+    # Si pas de extraction_end_date, essayer de déduire depuis les données
+    if not fx_target_year:
+        all_dates = []
+        for fam in data.values():
+            for lesson in fam.get("lessons", []):
+                d = lesson.get("date", "")
+                if d:
+                    try:
+                        all_dates.append(datetime.strptime(d, "%d.%m.%Y").date())
+                    except:
+                        pass
+        if all_dates:
+            # Prendre le mois le plus fréquent
+            from collections import Counter
+            month_counts = Counter((d.year, d.month) for d in all_dates)
+            fx_target_year, fx_target_month = month_counts.most_common(1)[0][0]
 
     def ensure_fx():
         nonlocal CHF_TO_EUR, fx_info
@@ -199,7 +233,7 @@ def compute_teacher_recap(
             CHF_TO_EUR = float(chf_to_eur_factor)
             fx_info = {"source": "manual", "factor": CHF_TO_EUR}
             return
-        rate, source = fetch_chf_eur_rate()
+        rate, source = fetch_chf_eur_rate(fx_target_year, fx_target_month)
         CHF_TO_EUR = rate
         fx_info = {"source": source, "factor": CHF_TO_EUR}
 
