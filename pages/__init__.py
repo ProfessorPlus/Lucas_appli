@@ -1701,31 +1701,51 @@ def page_reminders(ctx):
         st.warning("🔔 **C'est le 11 du mois !** C'est le bon moment pour envoyer les rappels.")
     
     # ===========================
-    # ÉTAPE 1 : CHARGER LES IMPAYÉS DEPUIS NOTION
+    # ÉTAPE 0 : RAPPEL TUTORBIRD
     # ===========================
-    st.markdown("### 📋 Étape 1 — Familles non payées (Notion)")
+    st.markdown("### 💡 Étape 0 — Vérification préalable")
+    st.caption("Pensez à relancer une **extraction TutorBird** si vous avez ajouté/modifié des emails récemment, pour que les dernières informations soient prises en compte.")
     
-    latest_folder_for_reminders = _invoice_folder_choices()[0][1] if _invoice_folder_choices() else None
-    latest_folder_path_for_reminders = _ensure_local_invoice_folder(latest_folder_for_reminders) if latest_folder_for_reminders else None
-    unpaid_data_for_matching = _try_load_data(ctx)
+    # ===========================
+    # ÉTAPE 1 : DOSSIER DE FACTURES
+    # ===========================
+    st.markdown("### 📁 Étape 1 — Dossier de factures (pour joindre les PDFs)")
     
-    # Enrichir les emails depuis les données TutorBird fraîches si possible
-    # (recharge depuis Drive pour avoir les dernières mises à jour)
-    if not unpaid_data_for_matching:
-        try:
-            unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
-        except Exception:
-            pass
-
+    mode_rem_preload, selected_folder_rem_preload = _render_invoice_folder_selector(
+        "invoice_folder_mode_reminder_pre", "invoice_folder_select_reminder_pre", default_to_latest=False
+    )
+    
+    st.markdown("---")
+    
+    # ===========================
+    # ÉTAPE 2 : CHARGER LES IMPAYÉS DEPUIS NOTION
+    # ===========================
+    st.markdown("### 📋 Étape 2 — Familles non payées (Notion)")
+    
     if st.button("🔍 Charger les familles non payées depuis Notion", width="stretch", key="load_unpaid_notion"):
         with st.spinner("Chargement depuis Notion..."):
+            # Charger le dossier seulement au clic (évite la lenteur)
+            folder_path_for_matching = None
+            if mode_rem_preload == "Utiliser un dossier existant" and selected_folder_rem_preload:
+                folder_path_for_matching = _ensure_local_invoice_folder(selected_folder_rem_preload)
+            
+            unpaid_data_for_matching = _try_load_data(ctx)
+            if not unpaid_data_for_matching:
+                try:
+                    unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
+                except Exception:
+                    pass
+            
             result = get_unpaid_families_from_notion(
                 secrets,
                 data=unpaid_data_for_matching,
-                invoice_folder=latest_folder_path_for_reminders,
+                invoice_folder=folder_path_for_matching,
             )
             if result["success"]:
                 st.session_state.unpaid_families = result["unpaid"]
+                # Mémoriser le dossier sélectionné pour l'envoi
+                st.session_state.reminder_folder_mode = mode_rem_preload
+                st.session_state.reminder_folder_selected = selected_folder_rem_preload
                 st.success(f"✅ {len(result['unpaid'])} famille(s) avec paiement en attente")
             else:
                 st.error(f"❌ Erreur : {result['error']}")
@@ -1756,29 +1776,16 @@ def page_reminders(ctx):
     
     st.markdown("---")
     
-    # ===========================
-    # ÉTAPE 2 : SÉLECTION DU DOSSIER DE FACTURES (depuis Drive)
-    # ===========================
-    st.markdown("### 📁 Étape 2 — Dossier de factures (pour joindre les PDFs)")
-    
-    mode_rem, selected_folder_rem = _render_invoice_folder_selector(
-        "invoice_folder_mode_reminder", "invoice_folder_select_reminder", default_to_latest=False
-    )
-    
-    folder_path = None
-    if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
-        folder_path = _ensure_local_invoice_folder(selected_folder_rem)
-        if not folder_path:
-            st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
-    elif mode_rem != "Utiliser un dossier existant":
-        st.warning("⚠️ Sélectionnez un dossier existant pour joindre les factures aux rappels.")
-    
     st.markdown("---")
     
     # ===========================
     # ÉTAPE 3 : TEMPLATE + OPTIONS
     # ===========================
     st.markdown("### ✉️ Étape 3 — Message de rappel")
+    
+    # Utiliser le dossier sélectionné à l'étape 1
+    selected_folder_rem = st.session_state.get("reminder_folder_selected")
+    mode_rem = st.session_state.get("reminder_folder_mode", "")
     
     # Déduire mois/année depuis le dossier ou la date courante
     if selected_folder_rem:
@@ -1841,10 +1848,26 @@ Professor+
         family_options = [f["parent_name"] for f in with_email]
         selected_names = st.multiselect("Sélectionner les familles", family_options, key="reminder_select_families")
     
+    # Exclusion de familles
+    available_for_exclusion = selected_names if selected_names else [f["parent_name"] for f in with_email]
+    excluded_names = st.multiselect(
+        "Ne pas envoyer à ces familles",
+        available_for_exclusion,
+        key="reminder_excluded_families"
+    )
+    final_names = [name for name in available_for_exclusion if name not in excluded_names]
+    if excluded_names:
+        selected_names = final_names
+    
     # Charger les données TutorBird pour le matching des factures PDF
     data = _try_load_data(ctx)
     if not data:
         st.caption("💡 Les données TutorBird ne sont pas chargées. Les factures PDF ne seront pas jointes automatiquement.")
+    
+    # Résoudre le dossier de factures pour l'envoi (depuis l'étape 1)
+    folder_path = None
+    if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
+        folder_path = _ensure_local_invoice_folder(selected_folder_rem)
     
     # ===========================
     # ENVOI TEST
@@ -2088,6 +2111,7 @@ def page_update(ctx):
     
     # Chargement des données avec fallback Drive
     data = _try_load_data(ctx)
+    latest = ctx["get_latest_invoice_folder"]()
     if not data:
         st.warning("⚠️ **Données des familles non disponibles.**")
         if st.button("📥 Charger depuis TutorBird / Drive", key="load_tb_update"):
