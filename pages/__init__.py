@@ -28,6 +28,7 @@ from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
 from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
 from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json
 from scripts.config_loader import is_streamlit_cloud
+from scripts.quotes_data import get_random_hadith, get_random_life_quote, get_progress_message
 
 
 def _try_load_data(ctx):
@@ -172,13 +173,24 @@ def page_accueil(ctx):
                 total_chf += amount
     
     if total_eur > 0 and total_chf > 0:
-        amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+        # Calculer le total EUR équivalent
+        try:
+            from scripts.recap_profs import fetch_chf_eur_rate
+            chf_eur_rate, _ = fetch_chf_eur_rate()
+            total_eur_equiv = total_eur + (total_chf * chf_eur_rate)
+            amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+            amount_sub = f"≈ {total_eur_equiv:,.0f} € total"
+        except Exception:
+            amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+            amount_sub = ""
         amount_size = "font-size: 1.1rem;"
     elif total_eur > 0:
         amount_display = f"{total_eur:,.0f} €"
+        amount_sub = ""
         amount_size = ""
     else:
         amount_display = f"{total_chf:,.0f} CHF"
+        amount_sub = ""
         amount_size = ""
     
     col1, col2, col3, col4 = st.columns(4)
@@ -187,7 +199,8 @@ def page_accueil(ctx):
     with col2:
         st.markdown(f'<div class="stat-card"><div class="stat-label">👨‍👩‍👧 Familles</div><div class="stat-value">{nb_families}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div></div>', unsafe_allow_html=True)
+        sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{amount_sub}</div>' if amount_sub else ""
+        st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div>{sub_html}</div>', unsafe_allow_html=True)
     with col4:
         folder_date = latest["date"].strftime("%d/%m/%Y") if latest else "—"
         st.markdown(f'<div class="stat-card"><div class="stat-label">📁 Dernier dossier</div><div class="stat-value" style="font-size: 1.2rem;">{folder_date}</div></div>', unsafe_allow_html=True)
@@ -245,6 +258,8 @@ def page_accueil(ctx):
                     with col_p3:
                         st.markdown(f'<div class="stat-card"><div class="stat-label">📊 Progression</div><div class="stat-value" style="color: {color};">{paid_count}/{total_payments}</div></div>', unsafe_allow_html=True)
                     st.progress(pct / 100)
+                    progress_msg = get_progress_message(pct)
+                    st.caption(progress_msg)
                 else:
                     st.caption("Aucune ligne Notion trouvée pour ce mois.")
         except Exception:
@@ -300,6 +315,34 @@ def page_accueil(ctx):
     # Alerte rappel automatique le 11
     if should_send_automatic_reminder():
         st.warning("🔔 **C'est le 11 du mois !** Pensez à envoyer les rappels de paiement aux familles qui n'ont pas encore payé.")
+    
+    # ===========================
+    # CITATIONS
+    # ===========================
+    st.markdown("---")
+    
+    hadith = get_random_hadith(st.session_state)
+    life_quote = get_random_life_quote(st.session_state)
+    
+    col_q1, col_q2 = st.columns(2)
+    with col_q1:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1a5632 0%, #2d8a56 100%); border-radius: 12px; padding: 20px; color: white; min-height: 140px;">
+            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.8; margin-bottom: 8px;">🕌 Hadith du jour</div>
+            <div style="font-size: 0.95rem; font-style: italic; line-height: 1.5;">« {hadith['text']} »</div>
+            <div style="font-size: 0.75rem; margin-top: 10px; opacity: 0.8;">— {hadith['narrator']} · {hadith['source']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_q2:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1a3a5c 0%, #2a5a8c 100%); border-radius: 12px; padding: 20px; color: white; min-height: 140px;">
+            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.8; margin-bottom: 8px;">💡 Citation du jour</div>
+            <div style="font-size: 0.95rem; font-style: italic; line-height: 1.5;">"{life_quote['text']}"</div>
+            <div style="font-size: 0.75rem; margin-top: 10px; opacity: 0.8;">— {life_quote['author']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("")
     
     st.markdown('<div class="section-title">⚡ Actions rapides</div>', unsafe_allow_html=True)
     
