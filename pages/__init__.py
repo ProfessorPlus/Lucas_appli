@@ -71,6 +71,71 @@ def _render_no_data_warning(page_label="cette fonctionnalité"):
         st.rerun()
 
 
+def _update_metadata(secrets, key_name, value=None, date_value=None):
+    """Met à jour une ligne dans System-Metadata Notion.
+    
+    Args:
+        secrets: config avec notion.token et notion.metadata_database_id
+        key_name: ex "last_invoice_sent_date" ou "last_reminder_sent_date"
+        value: nombre (optionnel, pour la colonne Valeur)
+        date_value: date ISO string (optionnel, pour la colonne Invoice date mail)
+    """
+    try:
+        import requests as _req
+        import time as _t
+        notion_cfg = secrets.get("notion", {})
+        token = notion_cfg.get("token")
+        metadata_db = notion_cfg.get("metadata_database_id")
+        if not token or not metadata_db:
+            return
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28",
+        }
+        
+        # Chercher la ligne existante
+        _t.sleep(0.25)
+        r = _req.post(f"https://api.notion.com/v1/databases/{metadata_db}/query", headers=headers, json={}, timeout=10)
+        if r.status_code != 200:
+            return
+        
+        page_id = None
+        for row in r.json().get("results", []):
+            p = row.get("properties", {})
+            cle = p.get("Clé", {}).get("title", [])
+            if cle and cle[0].get("plain_text", "").strip() == key_name:
+                page_id = row["id"]
+                break
+        
+        props = {}
+        if value is not None:
+            props["Valeur"] = {"number": value}
+        if date_value:
+            props["Invoice date mail"] = {"date": {"start": date_value}}
+        
+        if not props:
+            return
+        
+        if page_id:
+            # Update existing
+            _t.sleep(0.25)
+            _req.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json={"properties": props}, timeout=10)
+        else:
+            # Create new
+            props["Clé"] = {"title": [{"text": {"content": key_name}}]}
+            _t.sleep(0.25)
+            _req.post(f"https://api.notion.com/v1/pages", headers=headers, json={
+                "parent": {"database_id": metadata_db},
+                "properties": props
+            }, timeout=10)
+        
+        print(f"✅ Metadata updated: {key_name}")
+    except Exception as e:
+        print(f"⚠️ Metadata update failed for {key_name}: {e}")
+
+
 def page_accueil(ctx):
     st.markdown("""
     <div class="header-card">
@@ -80,47 +145,157 @@ def page_accueil(ctx):
     """, unsafe_allow_html=True)
     
     secrets = ctx["load_secrets"]()
-    data = ctx["load_extracted_data"]()
+    data = _try_load_data(ctx)
     latest = ctx["get_latest_invoice_folder"]()
     
     nb_profs = len(secrets.get("teachers", {})) if secrets else 0
     nb_families = len(data) if data else 0
-    total_amount = sum(f.get("total_courses", 0) for f in data.values()) if data else 0
+    
+    # Calculer montants par devise
+    familles_euros = ctx["load_familles_euros"]() if secrets else []
+    from scripts.update_notion import normalize_name
+    euro_parents = {normalize_name(n) for n in familles_euros} if familles_euros else set()
+    
+    total_chf = 0
+    total_eur = 0
+    if data:
+        for fam in data.values():
+            parent = fam.get("parent_name") or fam.get("family_name") or ""
+            lessons = [L for L in fam.get("lessons", []) if L.get("attendance_status") != "AbsentNotice"]
+            amount = sum(float(L.get("amount") or 0) for L in lessons)
+            currency = (fam.get("currency") or "").upper()
+            if not currency:
+                currency = "EUR" if normalize_name(parent) in euro_parents else "CHF"
+            if currency == "EUR":
+                total_eur += amount
+            else:
+                total_chf += amount
+    
+    if total_eur > 0 and total_chf > 0:
+        amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+        amount_size = "font-size: 1.1rem;"
+    elif total_eur > 0:
+        amount_display = f"{total_eur:,.0f} €"
+        amount_size = ""
+    else:
+        amount_display = f"{total_chf:,.0f} CHF"
+        amount_size = ""
     
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-label">👨‍🏫 Professeurs</div>
-            <div class="stat-value">{nb_profs}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        st.markdown(f'<div class="stat-card"><div class="stat-label">👨‍🏫 Professeurs</div><div class="stat-value">{nb_profs}</div></div>', unsafe_allow_html=True)
     with col2:
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-label">👨‍👩‍👧 Familles</div>
-            <div class="stat-value">{nb_families}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        st.markdown(f'<div class="stat-card"><div class="stat-label">👨‍👩‍👧 Familles</div><div class="stat-value">{nb_families}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-label">💰 À facturer</div>
-            <div class="stat-value">{total_amount:,.0f} CHF</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
+        st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div></div>', unsafe_allow_html=True)
     with col4:
         folder_date = latest["date"].strftime("%d/%m/%Y") if latest else "—"
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-label">📁 Dernier dossier</div>
-            <div class="stat-value" style="font-size: 1.2rem;">{folder_date}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="stat-card"><div class="stat-label">📁 Dernier dossier</div><div class="stat-value" style="font-size: 1.2rem;">{folder_date}</div></div>', unsafe_allow_html=True)
+    
+    # ===========================
+    # SECTION PAIEMENTS
+    # ===========================
+    st.markdown('<div class="section-title">💳 Suivi des paiements</div>', unsafe_allow_html=True)
+    
+    choices = _invoice_folder_choices()
+    if choices:
+        folder_labels = [c[0] for c in choices]
+        selected_idx = st.selectbox("📁", range(len(folder_labels)), format_func=lambda i: folder_labels[i], key="home_folder_select", label_visibility="collapsed")
+        selected_home_folder = choices[selected_idx][1] if selected_idx is not None else None
+    else:
+        selected_home_folder = None
+        st.caption("Aucun dossier de factures trouvé.")
+    
+    if secrets and selected_home_folder:
+        try:
+            import requests as _req
+            NOTION_TOKEN = secrets["notion"]["token"]
+            DB_PAIEMENTS = secrets["notion"]["paiements_database_id"]
+            HEADERS_N = {"Authorization": f"Bearer {NOTION_TOKEN}", "Content-Type": "application/json", "Notion-Version": "2022-06-28"}
+            
+            _r = _req.post(f"https://api.notion.com/v1/databases/{DB_PAIEMENTS}/query", headers=HEADERS_N, json={"page_size": 100}, timeout=15)
+            
+            if _r.status_code == 200:
+                all_rows = _r.json().get("results", [])
+                folder_dt = _parse_invoice_folder_dt(selected_home_folder.get("month", ""))
+                
+                month_rows = []
+                for row in all_rows:
+                    p = row.get("properties", {})
+                    invoice_date = p.get("Invoice date", {}).get("date")
+                    row_date = invoice_date["start"][:7] if invoice_date and invoice_date.get("start") else None
+                    
+                    if folder_dt and row_date and row_date == folder_dt.strftime("%Y-%m"):
+                        is_paid = p.get("Payé ?", {}).get("checkbox", False)
+                        month_rows.append({"paid": is_paid})
+                
+                total_payments = len(month_rows)
+                paid_count = sum(1 for r in month_rows if r["paid"])
+                unpaid_count = total_payments - paid_count
+                
+                if total_payments > 0:
+                    pct = int(paid_count / total_payments * 100)
+                    color = "#28a745" if pct == 100 else "#f0ad4e" if pct >= 50 else "#dc3545"
+                    
+                    col_p1, col_p2, col_p3 = st.columns(3)
+                    with col_p1:
+                        st.markdown(f'<div class="stat-card"><div class="stat-label">✅ Payés</div><div class="stat-value" style="color: #28a745;">{paid_count}</div></div>', unsafe_allow_html=True)
+                    with col_p2:
+                        st.markdown(f'<div class="stat-card"><div class="stat-label">⏳ En attente</div><div class="stat-value" style="color: {"#dc3545" if unpaid_count > 0 else "#28a745"};">{unpaid_count}</div></div>', unsafe_allow_html=True)
+                    with col_p3:
+                        st.markdown(f'<div class="stat-card"><div class="stat-label">📊 Progression</div><div class="stat-value" style="color: {color};">{paid_count}/{total_payments}</div></div>', unsafe_allow_html=True)
+                    st.progress(pct / 100)
+                else:
+                    st.caption("Aucune ligne Notion trouvée pour ce mois.")
+        except Exception:
+            st.caption("Données paiement non disponibles.")
+    
+    # ===========================
+    # HISTORIQUE ENVOIS
+    # ===========================
+    st.markdown('<div class="section-title">📧 Historique des envois</div>', unsafe_allow_html=True)
+    
+    invoice_sent_date = "—"
+    reminder_sent_date = "—"
+    reminder_count = 0
+    
+    if secrets:
+        try:
+            import requests as _req
+            metadata_db = secrets["notion"].get("metadata_database_id")
+            if metadata_db:
+                _r = _req.post(
+                    f"https://api.notion.com/v1/databases/{metadata_db}/query",
+                    headers={"Authorization": f"Bearer {secrets['notion']['token']}", "Content-Type": "application/json", "Notion-Version": "2022-06-28"},
+                    json={}, timeout=10
+                )
+                if _r.status_code == 200:
+                    for row in _r.json().get("results", []):
+                        p = row.get("properties", {})
+                        cle = p.get("Clé", {}).get("title", [])
+                        key_name = cle[0].get("plain_text", "").strip() if cle else ""
+                        
+                        if key_name == "last_invoice_sent_date":
+                            d = p.get("Invoice date mail", {}).get("date")
+                            if d and d.get("start"):
+                                invoice_sent_date = d["start"][:10]
+                        elif key_name == "last_reminder_sent_date":
+                            d = p.get("Invoice date mail", {}).get("date")
+                            if d and d.get("start"):
+                                reminder_sent_date = d["start"][:10]
+                            val = p.get("Valeur", {}).get("number")
+                            if val:
+                                reminder_count = int(val)
+        except Exception:
+            pass
+    
+    col_h1, col_h2, col_h3 = st.columns(3)
+    with col_h1:
+        st.markdown(f'<div class="stat-card"><div class="stat-label">📨 Factures envoyées le</div><div class="stat-value" style="font-size: 1.1rem;">{invoice_sent_date}</div></div>', unsafe_allow_html=True)
+    with col_h2:
+        st.markdown(f'<div class="stat-card"><div class="stat-label">🔔 Dernière relance le</div><div class="stat-value" style="font-size: 1.1rem;">{reminder_sent_date}</div></div>', unsafe_allow_html=True)
+    with col_h3:
+        st.markdown(f'<div class="stat-card"><div class="stat-label">📊 Nb relances</div><div class="stat-value">{reminder_count}</div></div>', unsafe_allow_html=True)
     
     # Alerte rappel automatique le 11
     if should_send_automatic_reminder():
@@ -929,9 +1104,9 @@ def _render_payment_options(ctx, secrets, prefix):
     
     no_split_mode = st.toggle(
         "🏦 Tout recevoir sur mon compte (sans transfert aux profs)",
-        value=False,
+        value=True,
         key=f"no_split_{prefix}",
-        help="Active le mode sans split : tous les paiements vont directement sur votre compte Stripe principal (utilise secrets_no_prof.yaml)"
+        help="Active le mode sans split : tous les paiements vont directement sur votre compte Stripe principal"
     )
     
     # Méthodes de paiement (communes aux deux modes)
@@ -1225,6 +1400,8 @@ def page_invoices(ctx):
         st.info("""
         💡 **Note** : La mise à jour Notion n'est nécessaire que si le **prix** ou les **horaires** ont changé.
         Si vous corrigez uniquement une erreur de mise en page, pas besoin de mettre à jour Notion.
+        
+        📅 La colonne **Invoice Date modified** sera automatiquement remplie avec la date de régénération.
         """)
 
         preselected = st.session_state.get("regenerated_families", [])
@@ -1467,6 +1644,8 @@ def page_send(ctx):
             )
             if result["success"]:
                 st.success(f"✅ **{result['sent']}/{result['total']}** emails envoyés")
+                # Mettre à jour System-Metadata (envoi réel uniquement)
+                _update_metadata(secrets, "last_invoice_sent_date", date_value=datetime.today().strftime("%Y-%m-%d"))
                 st.caption(
                     f"PDFs détectés : {result.get('found_pdfs', 0)} | "
                     f"Familles prêtes : {result.get('matched_families', result.get('total', 0))}"
@@ -1522,46 +1701,28 @@ def page_reminders(ctx):
         st.warning("🔔 **C'est le 11 du mois !** C'est le bon moment pour envoyer les rappels.")
     
     # ===========================
-    # ÉTAPE 0 : RAPPEL TUTORBIRD
+    # ÉTAPE 1 : CHARGER LES IMPAYÉS DEPUIS NOTION
     # ===========================
-    st.markdown("### 💡 Étape 0 — Vérification préalable")
-    st.caption("Pensez à relancer une **extraction TutorBird** si vous avez ajouté/modifié des emails récemment dans TutorBird, pour que les dernières informations soient prises en compte.")
+    st.markdown("### 📋 Étape 1 — Familles non payées (Notion)")
     
-    # ===========================
-    # ÉTAPE 1 : DOSSIER DE FACTURES (depuis Drive) — affiché immédiatement, pas de chargement lourd
-    # ===========================
-    st.markdown("### 📁 Étape 1 — Dossier de factures (pour joindre les PDFs)")
+    latest_folder_for_reminders = _invoice_folder_choices()[0][1] if _invoice_folder_choices() else None
+    latest_folder_path_for_reminders = _ensure_local_invoice_folder(latest_folder_for_reminders) if latest_folder_for_reminders else None
+    unpaid_data_for_matching = _try_load_data(ctx)
     
-    mode_rem, selected_folder_rem = _render_invoice_folder_selector(
-        "invoice_folder_mode_reminder", "invoice_folder_select_reminder", default_to_latest=False
-    )
-    
-    st.markdown("---")
-    
-    # ===========================
-    # ÉTAPE 2 : CHARGER LES IMPAYÉS DEPUIS NOTION
-    # ===========================
-    st.markdown("### 📋 Étape 2 — Familles non payées (Notion)")
-    
+    # Enrichir les emails depuis les données TutorBird fraîches si possible
+    # (recharge depuis Drive pour avoir les dernières mises à jour)
+    if not unpaid_data_for_matching:
+        try:
+            unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
+        except Exception:
+            pass
+
     if st.button("🔍 Charger les familles non payées depuis Notion", width="stretch", key="load_unpaid_notion"):
         with st.spinner("Chargement depuis Notion..."):
-            # Charger le dossier de factures (seulement quand le bouton est cliqué)
-            folder_path_for_matching = None
-            if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
-                folder_path_for_matching = _ensure_local_invoice_folder(selected_folder_rem)
-            
-            # Charger les données TutorBird pour enrichir les emails
-            unpaid_data_for_matching = _try_load_data(ctx)
-            if not unpaid_data_for_matching:
-                try:
-                    unpaid_data_for_matching = storage_load_json("full_output_tb_SIMPLE.json", folder="data")
-                except Exception:
-                    pass
-            
             result = get_unpaid_families_from_notion(
                 secrets,
                 data=unpaid_data_for_matching,
-                invoice_folder=folder_path_for_matching,
+                invoice_folder=latest_folder_path_for_reminders,
             )
             if result["success"]:
                 st.session_state.unpaid_families = result["unpaid"]
@@ -1592,6 +1753,25 @@ def page_reminders(ctx):
         with st.expander(f"✅ {len(with_email)} famille(s) avec email", expanded=False):
             for f in with_email:
                 st.write(f"• **{f['parent_name']}** — {f.get('amount', 0):.2f} CHF — 📧 {f['parent_email']}")
+    
+    st.markdown("---")
+    
+    # ===========================
+    # ÉTAPE 2 : SÉLECTION DU DOSSIER DE FACTURES (depuis Drive)
+    # ===========================
+    st.markdown("### 📁 Étape 2 — Dossier de factures (pour joindre les PDFs)")
+    
+    mode_rem, selected_folder_rem = _render_invoice_folder_selector(
+        "invoice_folder_mode_reminder", "invoice_folder_select_reminder", default_to_latest=False
+    )
+    
+    folder_path = None
+    if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
+        folder_path = _ensure_local_invoice_folder(selected_folder_rem)
+        if not folder_path:
+            st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
+    elif mode_rem != "Utiliser un dossier existant":
+        st.warning("⚠️ Sélectionnez un dossier existant pour joindre les factures aux rappels.")
     
     st.markdown("---")
     
@@ -1661,27 +1841,10 @@ Professor+
         family_options = [f["parent_name"] for f in with_email]
         selected_names = st.multiselect("Sélectionner les familles", family_options, key="reminder_select_families")
     
-    # Exclusion de familles
-    available_for_exclusion = selected_names if selected_names else [f["parent_name"] for f in with_email]
-    excluded_names = st.multiselect(
-        "Ne pas envoyer à ces familles",
-        available_for_exclusion,
-        key="reminder_excluded_families"
-    )
-    final_names = [name for name in available_for_exclusion if name not in excluded_names]
-    # Convertir en selected_names pour le reste du code
-    if excluded_names:
-        selected_names = final_names
-    
     # Charger les données TutorBird pour le matching des factures PDF
     data = _try_load_data(ctx)
     if not data:
         st.caption("💡 Les données TutorBird ne sont pas chargées. Les factures PDF ne seront pas jointes automatiquement.")
-    
-    # Résoudre le dossier de factures pour l'envoi
-    folder_path = None
-    if mode_rem == "Utiliser un dossier existant" and selected_folder_rem:
-        folder_path = _ensure_local_invoice_folder(selected_folder_rem)
     
     # ===========================
     # ENVOI TEST
@@ -1744,6 +1907,29 @@ Professor+
                 st.warning(f"⚠️ **{sent}/{total}** rappels envoyés — **{len(errors)}** erreur(s)")
             else:
                 st.success(f"✅ **{sent}/{total}** rappels envoyés avec succès !")
+            
+            # Mettre à jour System-Metadata (envoi réel uniquement)
+            if sent > 0:
+                # Incrémenter le compteur de rappels
+                current_count = 0
+                try:
+                    import requests as _req
+                    metadata_db = secrets["notion"].get("metadata_database_id")
+                    if metadata_db:
+                        _r = _req.post(
+                            f"https://api.notion.com/v1/databases/{metadata_db}/query",
+                            headers={"Authorization": f"Bearer {secrets['notion']['token']}", "Content-Type": "application/json", "Notion-Version": "2022-06-28"},
+                            json={}, timeout=10
+                        )
+                        if _r.status_code == 200:
+                            for row in _r.json().get("results", []):
+                                cle = row.get("properties", {}).get("Clé", {}).get("title", [])
+                                if cle and cle[0].get("plain_text", "").strip() == "last_reminder_sent_date":
+                                    current_count = int(row.get("properties", {}).get("Valeur", {}).get("number", 0) or 0)
+                                    break
+                except Exception:
+                    pass
+                _update_metadata(secrets, "last_reminder_sent_date", value=current_count + 1, date_value=datetime.today().strftime("%Y-%m-%d"))
             
             # Rapport détaillé
             if sent > 0:
@@ -1949,13 +2135,21 @@ def page_update(ctx):
         
         if st.button("📤 Ajouter les lignes", type="primary", width="stretch", key="add_all_notion"):
             familles_euros = ctx["load_familles_euros"]()
+            
+            # Extraire la date de facture depuis le nom du dossier (ex: "Mars 2026 - 24-03-2026")
+            invoice_date_from_folder = None
+            if selected_folder_t1:
+                folder_dt = _parse_invoice_folder_dt(selected_folder_t1.get("month", ""))
+                if folder_dt:
+                    invoice_date_from_folder = folder_dt.strftime("%Y-%m-%d")
+            
             progress = st.progress(0)
             status = st.empty()
             def callback(p, m):
                 progress.progress(p)
                 status.info(m)
             
-            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros)
+            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros, invoice_date_override=invoice_date_from_folder)
             
             if result["success"]:
                 added = result.get('added', 0)

@@ -64,7 +64,7 @@ def _pick_first_existing(db_properties, *names):
     return names[0] if names else None
 
 
-def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, familles_euros=None):
+def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, familles_euros=None, invoice_date_override=None):
     """
     Ajoute les nouvelles lignes dans Notion ET crée les sous-pages profs.
     
@@ -408,8 +408,11 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
                 date_end_iso = last_dt.strftime("%Y-%m-%d")
                 year_value = first_dt.year
             
-            # Invoice date = aujourd'hui (date de création de la facture)
-            today_iso = datetime.today().strftime("%Y-%m-%d")
+            # Invoice date = date de création de la facture (depuis le dossier, pas aujourd'hui)
+            if invoice_date_override:
+                invoice_date_iso = invoice_date_override
+            else:
+                invoice_date_iso = datetime.today().strftime("%Y-%m-%d")
             
             # Construire les propriétés Notion
             properties = {
@@ -443,8 +446,8 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
                     date_prop["end"] = date_end_iso
                 properties["Date cours factures"] = {"date": date_prop}
             
-            # Invoice date (date de création)
-            properties["Invoice date"] = {"date": {"start": today_iso}}
+            # Invoice date (date de création de la facture)
+            properties["Invoice date"] = {"date": {"start": invoice_date_iso}}
             
             print(f"  📤 {parent_name} | {total_amount:.2f} {currency} | {total_hours:.1f}h | id={next_id}")
             
@@ -1076,6 +1079,8 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                 properties = {
                     amount_prop_name: {"number": round(totals["amount"], 2)},
                     "Heures": {"rich_text": [{"text": {"content": f"{totals['hours']:.1f}h"}}]},
+                    # Marquer que la facture a été modifiée avec la date de régénération
+                    "Invoice Date modified": {"date": {"start": datetime.today().strftime("%Y-%m-%d")}},
                 }
                 
                 result = notion_request("PATCH", f"pages/{page_id}", {"properties": properties})
