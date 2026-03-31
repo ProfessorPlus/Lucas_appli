@@ -83,6 +83,7 @@ def run_create_payment_links(
     payment_method_types=None,
     target_family_ids=None,
     skip_if_exists=True,
+    additional_amounts=None,
 ):
     """
     Génère les liens de paiement Stripe.
@@ -248,6 +249,18 @@ def run_create_payment_links(
                 is_notion_teacher = any(L.get("source") == "notion_hors_tb" for L in t_lessons)
 
                 total_amount = sum(float(L.get("amount") or 0) for L in t_lessons)
+                
+                # Ajouter les montants impayés des mois précédents pour ce prof/famille
+                prev_amount = 0.0
+                if additional_amounts:
+                    # additional_amounts can be {fam_id: amount} or {(fam_id, teacher): amount}
+                    if (fam_id, teacher_name) in additional_amounts:
+                        prev_amount = float(additional_amounts[(fam_id, teacher_name)])
+                    elif fam_id in additional_amounts:
+                        prev_amount = float(additional_amounts[fam_id])
+                    if prev_amount > 0:
+                        total_amount += prev_amount
+                
                 if total_amount <= 0:
                     continue
 

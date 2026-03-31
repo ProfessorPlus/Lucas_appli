@@ -146,6 +146,12 @@ def save_secrets(secrets):
     path = os.path.join(CONFIG_DIR, "secrets.yaml")
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(secrets, f, default_flow_style=False, allow_unicode=True)
+    # Aussi sauvegarder sur Google Drive pour persister après reboot
+    try:
+        from scripts.storage_manager import save_file
+        save_file(path, drive_folder="config", drive_filename="secrets.yaml")
+    except Exception as e:
+        print(f"⚠️ Erreur sauvegarde secrets sur Drive: {e}")
 
 def load_familles_euros():
     paths = [

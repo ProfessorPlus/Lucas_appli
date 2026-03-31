@@ -180,7 +180,8 @@ def _next_invoice_number(counter_root, invoice_date):
 
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
-                       parent_name, logo_path, counter_root, today, is_notion_custom=False):
+                       parent_name, logo_path, counter_root, today, is_notion_custom=False,
+                       previous_items=None, previous_month_label=None):
     """
     Génère un PDF de facture.
     
@@ -295,6 +296,26 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                 Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT, textColor=BRAND_GREEN)),
             ])
         
+        # Ajouter les cours impayés des mois précédents (notion custom)
+        if previous_items:
+            separator_label = previous_month_label or "mois précédent(s)"
+            st_separator_nc = ParagraphStyle(
+                name="sep_nc", fontName=FONT_BOLD, fontSize=9,
+                textColor=colors.Color(0.8, 0.2, 0.1), alignment=TA_CENTER,
+            )
+            sep_text = f"⚠ Rappel — Cours non encore réglés — {separator_label}"
+            data_tbl.append([
+                Paragraph(sep_text, st_separator_nc),
+                Paragraph("", st_separator_nc),
+            ])
+            for prev_item in previous_items:
+                desc_cell = prev_item["description"]
+                amt_cell = f'{prev_item["amount"]:.2f} {currency}'
+                data_tbl.append([
+                    Paragraph(desc_cell, ParagraphStyle(name="c2", fontName=FONT_SANS, fontSize=10)),
+                    Paragraph(amt_cell, ParagraphStyle(name="r2", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT, textColor=BRAND_GREEN)),
+                ])
+        
         col_widths_tbl = [avail * 0.7, avail * 0.3]
     else:
         data_tbl = [
@@ -312,13 +333,34 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
             amt = float(item["amount"])
             amount_cell = f"{amt:.2f} {currency}"
             data_tbl.append([date_cell, desc_cell, amount_cell])
+        
+        # Ajouter les cours impayés des mois précédents
+        if previous_items:
+            separator_label = previous_month_label or "mois précédent(s)"
+            st_separator = ParagraphStyle(
+                name="sep", fontName=FONT_BOLD, fontSize=9,
+                textColor=colors.Color(0.8, 0.2, 0.1), alignment=TA_CENTER,
+            )
+            sep_text = f"⚠ Rappel — Cours non encore réglés — {separator_label}"
+            prev_separator_row_idx = len(data_tbl)
+            data_tbl.append([
+                "",
+                Paragraph(sep_text, st_separator),
+                "",
+            ])
+            for prev_item in previous_items:
+                date_cell = prev_item["date"].strftime("%d.%m.%Y") if prev_item["date"] != datetime.min else ""
+                desc_cell = prev_item["description"]
+                amt = float(prev_item["amount"])
+                amount_cell = f"{amt:.2f} {currency}"
+                data_tbl.append([date_cell, desc_cell, amount_cell])
 
     if is_notion_custom:
         tbl = Table(data_tbl, colWidths=col_widths_tbl, repeatRows=1)
     else:
         tbl = Table(data_tbl, colWidths=[30*mm, avail - 60*mm, 30*mm], repeatRows=1)
 
-    tbl.setStyle(TableStyle([
+    tbl_style_cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
@@ -336,10 +378,34 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         ("BOTTOMPADDING", (0, 1), (-1, -1), 8),
 
         ("LINEBELOW", (0, 1), (-1, -1), 0.35, colors.lightgrey),
-    ]))
+    ]
+
+    # Style the separator row if previous items were added
+    if previous_items and not is_notion_custom and 'prev_separator_row_idx' in dir():
+        pass  # prev_separator_row_idx is a local variable
+    if previous_items:
+        # Find the separator row index — it's after current items + header
+        sep_idx = 1 + len(items)  # 1 for header row
+        tbl_style_cmds.append(("BACKGROUND", (0, sep_idx), (-1, sep_idx), colors.Color(1.0, 0.95, 0.93)))
+        tbl_style_cmds.append(("TOPPADDING", (0, sep_idx), (-1, sep_idx), 12))
+        tbl_style_cmds.append(("BOTTOMPADDING", (0, sep_idx), (-1, sep_idx), 12))
+        tbl_style_cmds.append(("LINEABOVE", (0, sep_idx), (-1, sep_idx), 1.0, colors.Color(0.8, 0.2, 0.1)))
+
+    tbl.setStyle(TableStyle(tbl_style_cmds))
 
     flow.append(tbl)
-    flow.append(Spacer(1, 18 * mm))
+    
+    # Note si facture combinée
+    if previous_items:
+        st_note = ParagraphStyle(name="note", fontName=FONT_SANS, fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+        flow.append(Spacer(1, 3 * mm))
+        flow.append(Paragraph(
+            "Cette facture combine les cours du mois en cours et les cours des mois précédents non encore réglés.",
+            st_note
+        ))
+        flow.append(Spacer(1, 12 * mm))
+    else:
+        flow.append(Spacer(1, 18 * mm))
 
     # TOTAL + BOUTON
     total_para = TotalTight(f"Total dû : {total_due_display}", spacing=-1.0)
@@ -368,7 +434,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         traceback.print_exc()
 
 
-def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None, force_new_folder=False):
+def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None, force_new_folder=False, previous_unpaid_data=None, previous_month_label=None):
     """
     Génère les factures PDF.
     
@@ -381,6 +447,10 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         logo_path: Chemin vers le logo (optionnel)
         callback: Fonction callback(progress, message)
         target_folder_path: Chemin vers le dossier cible (optionnel, pour régénération)
+        force_new_folder: Force la création d'un nouveau dossier
+        previous_unpaid_data: dict {family_id: {"lessons": [...], ...}} des mois précédents impayés.
+                              Les leçons sont ajoutées en section "Rappel" dans le PDF avec le détail.
+        previous_month_label: str label pour la section rappel (ex: "Janvier 2026")
     
     Returns:
         dict: {"success": bool, "invoices": int, "links_found": int, "generated_files": list, ...}
@@ -541,6 +611,27 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 if total_due <= 0:
                     continue
                 
+                # Construire les items impayés des mois précédents pour cette famille
+                prev_items_for_fam = []
+                if previous_unpaid_data:
+                    prev_fam = previous_unpaid_data.get(fam_id)
+                    if prev_fam:
+                        prev_lessons = prev_fam.get("lessons", [])
+                        prev_lessons_filtered = [
+                            L for L in prev_lessons
+                            if L.get("attendance_status") not in STATUTS_NON_FACTURES
+                        ]
+                        prev_lessons_sorted = sorted(prev_lessons_filtered, key=lambda x: parse_dt(x.get("date", "")))
+                        for L in prev_lessons_sorted:
+                            d = parse_dt(L.get("date", ""))
+                            student = L.get("student", "")
+                            teacher = L.get("teacher", "Professeur")
+                            duration = L.get("duration_min", "")
+                            desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                            amt = float(L.get("amount", 0) or 0)
+                            total_due += amt
+                            prev_items_for_fam.append({"date": d, "description": desc, "amount": amt})
+                
                 total_due_display = f"{total_due:.2f} {currency}"
                 
                 # Lien no-split
@@ -561,7 +652,9 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,
-                    is_notion_custom=is_notion_custom
+                    is_notion_custom=is_notion_custom,
+                    previous_items=prev_items_for_fam if prev_items_for_fam else None,
+                    previous_month_label=previous_month_label,
                 )
                 factures_generees += 1
                 generated_files.append(output_path)
@@ -595,8 +688,6 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     
                     if total_due <= 0:
                         continue
-                    
-                    total_due_display = f"{total_due:.2f} {currency}"
                     
                     # Chercher lien paiement
                     pay_link_url = None
@@ -643,6 +734,27 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         pay_link_url = "https://example.com"
                         liens_manquants.append(f"{parent_name} / {teacher_display}")
                     
+                    # Construire les items impayés des mois précédents pour cette famille/prof
+                    prev_items_for_teacher = []
+                    if previous_unpaid_data:
+                        prev_fam = previous_unpaid_data.get(fam_id)
+                        if prev_fam:
+                            for pL in prev_fam.get("lessons", []):
+                                if pL.get("attendance_status") in STATUTS_NON_FACTURES:
+                                    continue
+                                prev_teacher = pL.get("teacher") or ""
+                                if normalize(prev_teacher) == normalize(teacher_display) or normalize(prev_teacher) == normalize(teacher_yaml):
+                                    d = parse_dt(pL.get("date", ""))
+                                    student = pL.get("student", "")
+                                    duration = pL.get("duration_min", "")
+                                    desc = f"Cours avec {prev_teacher} pour {student} ({duration} min)"
+                                    amt = float(pL.get("amount", 0) or 0)
+                                    total_due += amt
+                                    prev_items_for_teacher.append({"date": d, "description": desc, "amount": amt})
+                            prev_items_for_teacher.sort(key=lambda x: x["date"])
+                    
+                    total_due_display = f"{total_due:.2f} {currency}"
+                    
                     teacher_clean = clean_str(teacher_display.replace(" ", "_"))
                     filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{teacher_clean}.pdf"
                     output_path = os.path.join(fam_base_dir, filename)
@@ -650,7 +762,9 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     # Générer le PDF
                     _build_invoice_pdf(
                         output_path, items, total_due_display, pay_link_url,
-                        parent_name, logo_path, counter_root, today
+                        parent_name, logo_path, counter_root, today,
+                        previous_items=prev_items_for_teacher if prev_items_for_teacher else None,
+                        previous_month_label=previous_month_label,
                     )
                     factures_generees += 1
                     generated_files.append(output_path)

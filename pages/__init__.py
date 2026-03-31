@@ -193,6 +193,38 @@ def page_accueil(ctx):
         amount_sub = ""
         amount_size = ""
     
+    # Calculer le net EUR (CA total EUR - part profs)
+    net_eur_display = "—"
+    net_eur_sub = ""
+    try:
+        if data and secrets:
+            tarifs_speciaux = ctx["load_tarifs_speciaux"]() if callable(ctx.get("load_tarifs_speciaux")) else []
+            # Déterminer la date d'extraction pour le FX
+            extraction_end = None
+            if st.session_state.get("extract_dates"):
+                extraction_end = st.session_state["extract_dates"].get("end_date")
+            recap = compute_teacher_recap(
+                data, secrets, familles_euros, tarifs_speciaux,
+                extraction_end_date=extraction_end,
+            )
+            profs_total_eur = recap.get("grand_total", 0)
+            # total_eur_equiv est déjà calculé plus haut (ou on le recalcule)
+            if total_eur > 0 and total_chf > 0:
+                from scripts.recap_profs import fetch_chf_eur_rate as _fetch_rate
+                _rate, _ = _fetch_rate()
+                ca_total_eur = total_eur + (total_chf * _rate)
+            elif total_eur > 0:
+                ca_total_eur = total_eur
+            else:
+                from scripts.recap_profs import fetch_chf_eur_rate as _fetch_rate
+                _rate, _ = _fetch_rate()
+                ca_total_eur = total_chf * _rate
+            net_eur = ca_total_eur - profs_total_eur
+            net_eur_display = f"{net_eur:,.0f} €"
+            net_eur_sub = f"CA {ca_total_eur:,.0f} € − Profs {profs_total_eur:,.0f} €"
+    except Exception as _e:
+        print(f"⚠️ Erreur calcul net EUR: {_e}")
+
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f'<div class="stat-card"><div class="stat-label">👨‍🏫 Professeurs</div><div class="stat-value">{nb_profs}</div></div>', unsafe_allow_html=True)
@@ -202,8 +234,8 @@ def page_accueil(ctx):
         sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{amount_sub}</div>' if amount_sub else ""
         st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div>{sub_html}</div>', unsafe_allow_html=True)
     with col4:
-        folder_date = latest["date"].strftime("%d/%m/%Y") if latest else "—"
-        st.markdown(f'<div class="stat-card"><div class="stat-label">📁 Dernier dossier</div><div class="stat-value" style="font-size: 1.2rem;">{folder_date}</div></div>', unsafe_allow_html=True)
+        net_sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{net_eur_sub}</div>' if net_eur_sub else ""
+        st.markdown(f'<div class="stat-card"><div class="stat-label">💶 Mon net EUR</div><div class="stat-value" style="color: #28a745;">{net_eur_display}</div>{net_sub_html}</div>', unsafe_allow_html=True)
     
     # ===========================
     # SECTION PAIEMENTS
@@ -944,6 +976,32 @@ def page_payment(ctx):
         # Options communes (On Behalf Of + Méthodes paiement)
         use_on_behalf, selected_teachers, payment_method_types, no_split_mode, secrets_no_prof = _render_payment_options(ctx, secrets, "tab1")
         
+        # Option: inclure les impayés des mois précédents dans le montant
+        include_unpaid_payment = st.checkbox(
+            "📌 Inclure les montants impayés des mois précédents",
+            value=False,
+            key="include_unpaid_payment_links",
+            help="Si coché, le lien de paiement couvrira aussi les cours non réglés des mois précédents (chargés via la page Factures)."
+        )
+        
+        additional_amounts = None
+        if include_unpaid_payment:
+            prev_data = st.session_state.get("_previous_unpaid_data")
+            if prev_data:
+                additional_amounts = {}
+                for fam_id, fam_data in prev_data.items():
+                    lessons = fam_data.get("lessons", [])
+                    billable = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
+                    fam_total = sum(float(L.get("amount") or 0) for L in billable)
+                    if fam_total > 0:
+                        additional_amounts[fam_id] = fam_total
+                if additional_amounts:
+                    st.info(f"📦 **{len(additional_amounts)}** famille(s) avec montant impayé ajouté au lien Stripe")
+                else:
+                    st.warning("⚠️ Aucun montant impayé trouvé dans les données chargées.")
+            else:
+                st.warning("⚠️ Les données impayées ne sont pas chargées. Allez d'abord dans **Générer Factures** → cochez **Inclure les impayés** → **Charger les données**.")
+        
         # Bouton Relancer manquants (seulement si rapport affiché et mode normal)
         if not no_split_mode and st.session_state.get("show_payment_report") and os.path.exists(report_path):
             with open(report_path, "r", encoding="utf-8") as f:
@@ -1004,6 +1062,7 @@ def page_payment(ctx):
                         data, secrets_no_prof, familles_euros,
                         ctx["DATA_DIR"], callback,
                         payment_method_types=payment_method_types,
+                        additional_amounts=additional_amounts,
                     )
                     
                     if result["success"]:
@@ -1017,6 +1076,7 @@ def page_payment(ctx):
                     data, secrets, familles_euros, tarifs_speciaux,
                     use_on_behalf, selected_teachers, ctx["DATA_DIR"], callback,
                     payment_method_types=payment_method_types,
+                    additional_amounts=additional_amounts,
                 )
             
             if result and result["success"]:
@@ -1363,6 +1423,114 @@ def page_invoices(ctx):
         if not logo_path:
             st.warning("⚠️ Logo non trouvé")
 
+        # ===========================
+        # OPTION : INCLURE LES IMPAYÉS DES MOIS PRÉCÉDENTS
+        # ===========================
+        include_unpaid = st.checkbox(
+            "📌 Inclure les cours impayés des mois précédents",
+            value=False,
+            key="include_unpaid_previous_months",
+            help="Si coché, les factures incluront une section 'Rappel' avec le détail des cours non encore réglés des mois précédents. Le montant total (et le lien Stripe) couvriront l'ensemble."
+        )
+        
+        previous_unpaid_data = None
+        previous_month_label = None
+        
+        if include_unpaid:
+            st.markdown("---")
+            st.markdown("##### 📋 Chargement des impayés")
+            st.caption("Sélectionnez le(s) mois impayé(s) à inclure. Les données TutorBird de ces mois seront rechargées depuis Google Drive.")
+            
+            # Proposer les mois disponibles (archives mensuelles)
+            available_months = []
+            try:
+                today_dt = datetime.today()
+                for months_back in range(1, 7):  # 6 mois en arrière max
+                    m = today_dt.month - months_back
+                    y = today_dt.year
+                    while m <= 0:
+                        m += 12
+                        y -= 1
+                    month_key = f"{y:04d}-{m:02d}"
+                    MONTHS_FR_LOCAL = ctx["MONTHS_FR"]
+                    label = f"{MONTHS_FR_LOCAL[m - 1]} {y}"
+                    available_months.append((label, month_key))
+            except Exception:
+                pass
+            
+            if available_months:
+                month_labels = [m[0] for m in available_months]
+                selected_unpaid_months = st.multiselect(
+                    "Mois à inclure comme rappel",
+                    month_labels,
+                    default=[month_labels[0]] if month_labels else [],
+                    key="select_unpaid_months",
+                )
+                
+                if selected_unpaid_months:
+                    previous_month_label = " + ".join(selected_unpaid_months)
+                    
+                    if st.button("🔍 Charger les données des mois sélectionnés", key="load_unpaid_data"):
+                        previous_unpaid_data = {}
+                        with st.spinner("Chargement des archives mensuelles..."):
+                            for label, month_key in available_months:
+                                if label not in selected_unpaid_months:
+                                    continue
+                                archive_name = f"full_output_tb_{month_key}.json"
+                                try:
+                                    month_data = storage_load_json(archive_name, folder="data")
+                                    if month_data:
+                                        # Fusionner les données : si une famille existe dans plusieurs mois,
+                                        # on ajoute les leçons
+                                        for fam_id, fam_data in month_data.items():
+                                            if fam_id in previous_unpaid_data:
+                                                previous_unpaid_data[fam_id]["lessons"].extend(fam_data.get("lessons", []))
+                                                previous_unpaid_data[fam_id]["total_courses"] += fam_data.get("total_courses", 0)
+                                            else:
+                                                previous_unpaid_data[fam_id] = dict(fam_data)
+                                        st.success(f"✅ {label} : {len(month_data)} famille(s) chargée(s)")
+                                    else:
+                                        st.warning(f"⚠️ {label} : archive `{archive_name}` non trouvée sur Drive")
+                                except Exception as e:
+                                    st.warning(f"⚠️ {label} : erreur chargement — {e}")
+                        
+                        if previous_unpaid_data:
+                            # Filtrer pour ne garder que les familles avec impayés (via Notion)
+                            st.info("🔄 Croisement avec les impayés Notion...")
+                            try:
+                                from scripts.send_payment_reminders import get_unpaid_families_from_notion, normalize as _norm_reminder
+                                unpaid_result = get_unpaid_families_from_notion(secrets)
+                                if unpaid_result["success"]:
+                                    unpaid_names = {_norm_reminder(f["parent_name"]) for f in unpaid_result["unpaid"]}
+                                    # Ne garder que les familles réellement impayées
+                                    filtered = {}
+                                    for fam_id, fam_data in previous_unpaid_data.items():
+                                        parent = fam_data.get("parent_name") or fam_data.get("family_name") or ""
+                                        if _norm_reminder(parent) in unpaid_names:
+                                            filtered[fam_id] = fam_data
+                                    previous_unpaid_data = filtered
+                                    st.success(f"✅ {len(previous_unpaid_data)} famille(s) avec impayés confirmés")
+                                else:
+                                    st.warning("⚠️ Impossible de vérifier les impayés Notion — toutes les familles archivées seront incluses")
+                            except Exception as e:
+                                st.warning(f"⚠️ Erreur vérification Notion : {e}")
+                            
+                            st.session_state["_previous_unpaid_data"] = previous_unpaid_data
+                            st.session_state["_previous_month_label"] = previous_month_label
+                        else:
+                            st.warning("⚠️ Aucune donnée trouvée pour les mois sélectionnés. Vérifiez que les extractions ont été archivées.")
+            else:
+                st.warning("⚠️ Impossible de déterminer les mois disponibles.")
+        
+        # Récupérer depuis session_state si déjà chargé
+        if include_unpaid and "_previous_unpaid_data" in st.session_state:
+            previous_unpaid_data = st.session_state.get("_previous_unpaid_data")
+            previous_month_label = st.session_state.get("_previous_month_label")
+            if previous_unpaid_data:
+                st.info(f"📦 Données impayées chargées : **{len(previous_unpaid_data)}** famille(s) — {previous_month_label}")
+
+        st.markdown("---")
+
         if st.button("📄 Générer les factures", type="primary", width="stretch", key="gen_all_invoices"):
             familles_euros = ctx["load_familles_euros"]()
             progress = st.progress(0)
@@ -1384,6 +1552,8 @@ def page_invoices(ctx):
                 data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                 target_folder_path=target_folder_path,
                 force_new_folder=force_new_folder,
+                previous_unpaid_data=previous_unpaid_data if include_unpaid else None,
+                previous_month_label=previous_month_label if include_unpaid else None,
             )
 
             if result["success"]:
@@ -1605,20 +1775,20 @@ def page_send(ctx):
                     break
     
     carole_template = {
-        "subject": f"Invoice - Tutoring - {month_name} {year}",
-        "body": f"""Hello,
+        "subject": f"Facture - Soutien scolaire - {month_name} {year}",
+        "body": f"""Bonjour,
 
-I hope you are well.
+J'espère que vous allez bien.
 
-Please find attached the invoice for the tutoring lessons for {month_name} {year}.
+Veuillez trouver ci-joint la facture pour les cours de soutien scolaire du mois de {month_name} {year}.
 
-Details: {carole_details}
+Détails : {carole_details}
 
-You can pay directly by clicking the "Pay online" button in the PDF invoice.
+Vous pouvez régler directement en cliquant sur le bouton "Payer en ligne" dans la facture PDF.
 
-Please proceed with payment at your earliest convenience.
+Merci de procéder au paiement dans les plus brefs délais.
 
-Best regards,
+Cordialement,
 Professor+
 """
     }
@@ -1633,7 +1803,7 @@ Professor+
     with tab_carole:
         if carole_details:
             st.caption(f"📋 Détails heures Notion : **{carole_details}**")
-        subject_carole = st.text_input("📝 Subject", value=carole_template["subject"], key="invoice_mail_subject_carole")
+        subject_carole = st.text_input("📝 Sujet", value=carole_template["subject"], key="invoice_mail_subject_carole")
         body_carole = st.text_area("✉️ Message", value=carole_template["body"], height=250, key="invoice_mail_body_carole")
 
     st.markdown("---")
@@ -1921,22 +2091,22 @@ Professor+
                     break
     
     carole_reminder_template = {
-        "subject": f"Reminder - Outstanding invoice - Tutoring - {month_en} {year}",
-        "body": f"""Hello,
+        "subject": f"Rappel - Facture en attente - Soutien scolaire - {month_name} {year}",
+        "body": f"""Bonjour,
 
-I hope you are well.
+J'espère que vous allez bien.
 
-This is a friendly reminder regarding the outstanding tutoring invoice for {month_en} {year}.
+Je me permets de vous relancer concernant la facture de soutien scolaire du mois de {month_name} {year} qui reste en attente de règlement.
 
-Details: {carole_details_rem}
+Détails : {carole_details_rem}
 
-Please find attached the corresponding invoice. You can pay directly by clicking the "Pay online" button in the PDF.
+Vous trouverez ci-joint la facture correspondante. Vous pouvez régler directement en cliquant sur le bouton "Payer en ligne" dans le PDF.
 
-Please proceed with payment at your earliest convenience.
+Merci de procéder au paiement dès que possible.
 
-Do not hesitate to contact me if you have any questions or if you have already made the payment.
+N'hésitez pas à me contacter si vous avez des questions ou si vous avez déjà effectué le paiement.
 
-Best regards,
+Cordialement,
 Professor+
 """
     }
@@ -1951,7 +2121,7 @@ Professor+
     with tab_carole:
         if carole_details_rem:
             st.caption(f"📋 Détails heures Notion : **{carole_details_rem}**")
-        subject_carole = st.text_input("📝 Subject", value=carole_reminder_template["subject"], key="reminder_subject_carole")
+        subject_carole = st.text_input("📝 Sujet", value=carole_reminder_template["subject"], key="reminder_subject_carole")
         body_carole = st.text_area("✉️ Message", value=carole_reminder_template["body"], height=250, key="reminder_body_carole")
     
     st.markdown("---")

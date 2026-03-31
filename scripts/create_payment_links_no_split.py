@@ -117,6 +117,7 @@ def run_create_payment_links_no_split(
     payment_method_types=None,
     target_family_ids=None,
     skip_if_exists=True,
+    additional_amounts=None,
 ):
     """
     Génère les liens de paiement Stripe SANS aucun split/transfert.
@@ -219,10 +220,17 @@ def run_create_payment_links_no_split(
                 billable_lessons.append(L)
 
             total_amount = sum(float(L.get("amount") or 0) for L in billable_lessons)
+            
+            # Ajouter les montants impayés des mois précédents
+            prev_amount = 0.0
+            if additional_amounts and fam_id in additional_amounts:
+                prev_amount = float(additional_amounts[fam_id])
+                total_amount += prev_amount
+            
             if total_amount <= 0:
                 continue
 
-            # Skip si déjà créé
+            # Skip si déjà créé (utilise le montant CUMULÉ)
             if skip_if_exists and already_exists(fam_id, currency, total_amount, today):
                 continue
 
@@ -266,6 +274,8 @@ def run_create_payment_links_no_split(
                     "mode": "no_split",
                     "teacher_names": teacher_label,
                     "source_label": source_label,
+                    "includes_previous_months": "true" if prev_amount > 0 else "false",
+                    "previous_amount": f"{prev_amount:.2f}" if prev_amount > 0 else "0",
                 },
                 "payment_intent_data": {
                     "metadata": {
@@ -275,6 +285,7 @@ def run_create_payment_links_no_split(
                         "mode": "no_split",
                         "teacher_names": teacher_label,
                         "source_label": source_label,
+                        "includes_previous_months": "true" if prev_amount > 0 else "false",
                     }
                 },
                 "after_completion": {"type": "hosted_confirmation"},

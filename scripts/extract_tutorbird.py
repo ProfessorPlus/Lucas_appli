@@ -210,6 +210,15 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
                     drive_saved = True
             except Exception as e:
                 print(f"⚠️ Erreur sauvegarde Drive: {e}")
+            
+            # Archive mensuelle (pour rechargement des mois précédents)
+            try:
+                month_key = end_date.strftime("%Y-%m")
+                archive_name = f"full_output_tb_{month_key}.json"
+                save_json(archive_name, families, folder="data")
+                print(f"📦 Archive mensuelle sauvegardée : {archive_name}")
+            except Exception as e:
+                print(f"⚠️ Erreur sauvegarde archive mensuelle: {e}")
         
         update(100, "✅ Terminé !")
         
