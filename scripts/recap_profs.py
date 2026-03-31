@@ -237,6 +237,20 @@ def compute_teacher_recap(
         CHF_TO_EUR = rate
         fx_info = {"source": source, "factor": CHF_TO_EUR}
 
+    def smart_round(amount):
+        """Arrondit à l'unité supérieure si à moins de 0.05 (ex: 59.99 → 60.00, 19.97 → 20.00)."""
+        import math
+        upper = math.ceil(amount)
+        if upper - amount <= 0.05 and upper - amount > 0:
+            return float(upper)
+        return round(amount, 2)
+    
+    # Build set of auto_chf teachers
+    auto_chf_teachers = set()
+    for cfg_name, cfg_data in teachers_cfg.items():
+        if cfg_data.get("auto_chf"):
+            auto_chf_teachers.add(norm(cfg_name))
+
     # Compute
     teacher_totals = defaultdict(
         lambda: {"eur": 0.0, "chf_as_eur": 0.0, "nb_lessons": 0, "total_hours": 0.0, "details": []}
@@ -316,6 +330,11 @@ def compute_teacher_recap(
                 ensure_fx()
 
                 amount_eur = amount_chf * CHF_TO_EUR
+                
+                # Arrondi intelligent pour les profs avec auto_chf coché
+                if norm(t_name) in auto_chf_teachers or norm(cfg_key) in auto_chf_teachers:
+                    amount_eur = smart_round(amount_eur)
+                
                 teacher_totals[cfg_key]["chf_as_eur"] += amount_eur
                 currency_label = "CHF→EUR"
 

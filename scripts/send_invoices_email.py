@@ -198,7 +198,8 @@ def run_send_invoices(secrets, data, invoice_folder,
                       custom_subject=None, custom_body=None,
                       selected_families=None, send_to_test=False,
                       callback=None,
-                      custom_subject_en=None, custom_body_en=None):
+                      custom_subject_en=None, custom_body_en=None,
+                      custom_subject_carole=None, custom_body_carole=None):
     """Envoie les factures par email."""
 
     def update(progress, message):
@@ -265,9 +266,18 @@ def run_send_invoices(secrets, data, invoice_folder,
                 msg["From"] = sender_email
                 msg["To"] = recipient
 
-                lang = "en" if is_english(family.get("language")) else "fr"
-                raw_subject = subject_en if lang == "en" else subject_fr
-                raw_body = body_en if lang == "en" else body_fr
+                # Déterminer le template: Carole (notion_hors_tb) > EN > FR
+                fam_data = data.get(family.get("family_id"), {})
+                is_carole = fam_data.get("source") == "notion_hors_tb"
+                
+                if is_carole and custom_subject_carole:
+                    raw_subject = custom_subject_carole
+                    raw_body = custom_body_carole or body_en
+                    lang = "en"
+                else:
+                    lang = "en" if is_english(family.get("language")) else "fr"
+                    raw_subject = subject_en if lang == "en" else subject_fr
+                    raw_body = body_en if lang == "en" else body_fr
                 msg["Subject"] = _adapt_subject(raw_subject, family["invoice_count"], lang)
                 msg.attach(MIMEText(_adapt_body(raw_body, family["invoice_count"], lang), "plain"))
 

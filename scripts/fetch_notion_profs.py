@@ -137,6 +137,7 @@ def fetch_notion_profs(secrets):
             devise_prof = _get_text(p.get("Devise prof", {}), "rich_text") or "EUR"
             heures_faites = _get_number(p.get("Heures faites", {}))
             email_client = _get_email(p.get("email client", {}))
+            details_heures = _get_text(p.get("Détails heures", {}), "rich_text")
             langue = _get_text(p.get("Langue", {}), "rich_text") or _get_text(p.get("Langue", {}), "select") or ""
             language = "en" if str(langue).strip().lower() in {"anglais", "english", "en"} else "fr"
             
@@ -154,6 +155,7 @@ def fetch_notion_profs(secrets):
                 "devise_prof": devise_prof.upper(),
                 "heures_faites": heures_faites,
                 "email_client": email_client,
+                "details_heures": details_heures,
                 "language": language,
             })
         
@@ -167,8 +169,7 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
     """
     Convertit les entrées Notion en format compatible full_output_tb_SIMPLE.json.
     
-    Chaque entrée Notion devient une "famille" avec une seule "leçon" synthétique
-    dont la durée = heures_faites * 60 et le montant = taux_horaire_client * heures_faites.
+    FUSIONNE les entrées de même famille (ex: Carole avec 2 profs → 1 famille, 2 leçons).
     
     Args:
         entries: liste d'entrées (depuis fetch_notion_profs)
@@ -193,37 +194,41 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
         taux_client = entry["taux_horaire_client"]
         montant_total = round(taux_client * heures, 2)
         
-        # ID unique basé sur famille + prof
         famille = entry["famille"]
-        safe_id = f"notion_{famille}_{prof}".replace(" ", "_").lower()
+        # ID basé sur la famille uniquement (pour fusionner les entrées multi-profs)
+        safe_id = f"notion_{famille}".replace(" ", "_").lower()
         
-        # Créer l'entrée famille
-        families[safe_id] = {
-            "family_id": safe_id,
-            "family_name": famille,
-            "parent_name": famille,
-            "parent_email": entry["email_client"],
-            "lessons": [
-                {
-                    "date": datetime.today().strftime("%d.%m.%Y"),
-                    "time": "00:00",
-                    "student": entry["eleve"],
-                    "teacher": prof,
-                    "duration_min": int(heures * 60),
-                    "amount": montant_total,
-                    "attendance_status": "Present",
-                    "source": "notion_hors_tb",
-                    # Métadonnées supplémentaires pour le récap profs
-                    "notion_taux_prof": entry["taux_horaire_prof"],
-                    "notion_devise_prof": entry["devise_prof"],
-                    "notion_devise_client": entry["devise_client"],
-                    "notion_taux_client": taux_client,
-                }
-            ],
-            "total_courses": montant_total,
+        lesson = {
+            "date": datetime.today().strftime("%d.%m.%Y"),
+            "time": "00:00",
+            "student": entry["eleve"],
+            "teacher": prof,
+            "duration_min": int(heures * 60),
+            "amount": montant_total,
+            "attendance_status": "Present",
             "source": "notion_hors_tb",
-            "currency": entry["devise_client"].lower(),
-            "language": entry.get("language", "fr"),
+            "notion_taux_prof": entry["taux_horaire_prof"],
+            "notion_devise_prof": entry["devise_prof"],
+            "notion_devise_client": entry["devise_client"],
+            "notion_taux_client": taux_client,
+            "notion_details_heures": entry.get("details_heures", ""),
         }
+        
+        if safe_id in families:
+            # Famille déjà existante → ajouter la leçon
+            families[safe_id]["lessons"].append(lesson)
+            families[safe_id]["total_courses"] += montant_total
+        else:
+            families[safe_id] = {
+                "family_id": safe_id,
+                "family_name": famille,
+                "parent_name": famille,
+                "parent_email": entry["email_client"],
+                "lessons": [lesson],
+                "total_courses": montant_total,
+                "source": "notion_hors_tb",
+                "currency": entry["devise_client"].lower(),
+                "language": entry.get("language", "fr"),
+            }
     
     return families

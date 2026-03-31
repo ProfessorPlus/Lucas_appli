@@ -1591,13 +1591,50 @@ def page_send(ctx):
             for item in diagnostics["missing_pdf_families"]:
                 st.write(f"• **{item['parent_name']}** — {item.get('parent_email','')}")
 
-    tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
+    # Récupérer les détails heures Notion pour le mail personnalisé Carole
+    carole_details = ""
+    if data:
+        for fam in data.values():
+            if fam.get("source") == "notion_hors_tb":
+                for L in fam.get("lessons", []):
+                    dh = L.get("notion_details_heures", "")
+                    if dh:
+                        carole_details = dh
+                        break
+                if carole_details:
+                    break
+    
+    carole_template = {
+        "subject": f"Invoice - Tutoring - {month_name} {year}",
+        "body": f"""Hello,
+
+I hope you are well.
+
+Please find attached the invoice for the tutoring lessons for {month_name} {year}.
+
+Details: {carole_details}
+
+You can pay directly by clicking the "Pay online" button in the PDF invoice.
+
+Please proceed with payment at your earliest convenience.
+
+Best regards,
+Professor+
+"""
+    }
+    
+    tab_fr, tab_en, tab_carole = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier"])
     with tab_fr:
         subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="invoice_mail_subject_fr")
         body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="invoice_mail_body_fr")
     with tab_en:
         subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="invoice_mail_subject_en")
         body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="invoice_mail_body_en")
+    with tab_carole:
+        if carole_details:
+            st.caption(f"📋 Détails heures Notion : **{carole_details}**")
+        subject_carole = st.text_input("📝 Subject", value=carole_template["subject"], key="invoice_mail_subject_carole")
+        body_carole = st.text_area("✉️ Message", value=carole_template["body"], height=250, key="invoice_mail_body_carole")
 
     st.markdown("---")
     st.markdown("### 📬 Options d'envoi")
@@ -1642,6 +1679,7 @@ def page_send(ctx):
                     secrets, data, folder_path,
                     custom_subject=subject, custom_body=body,
                     custom_subject_en=subject_en, custom_body_en=body_en,
+                    custom_subject_carole=subject_carole, custom_body_carole=body_carole,
                     selected_families=selected_families,
                     send_to_test=True, callback=callback
                 )
@@ -1682,6 +1720,7 @@ def page_send(ctx):
                 secrets, data, folder_path,
                 custom_subject=subject, custom_body=body,
                 custom_subject_en=subject_en, custom_body_en=body_en,
+                custom_subject_carole=subject_carole, custom_body_carole=body_carole,
                 selected_families=selected_families,
                 send_to_test=False, callback=callback
             )
@@ -1867,13 +1906,53 @@ Professor+
 """
     }
     
-    tab_fr, tab_en = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais"])
+    # Récupérer les détails heures Notion pour Carole
+    carole_details_rem = ""
+    data_rem = _try_load_data(ctx)
+    if data_rem:
+        for fam in data_rem.values():
+            if fam.get("source") == "notion_hors_tb":
+                for L in fam.get("lessons", []):
+                    dh = L.get("notion_details_heures", "")
+                    if dh:
+                        carole_details_rem = dh
+                        break
+                if carole_details_rem:
+                    break
+    
+    carole_reminder_template = {
+        "subject": f"Reminder - Outstanding invoice - Tutoring - {month_en} {year}",
+        "body": f"""Hello,
+
+I hope you are well.
+
+This is a friendly reminder regarding the outstanding tutoring invoice for {month_en} {year}.
+
+Details: {carole_details_rem}
+
+Please find attached the corresponding invoice. You can pay directly by clicking the "Pay online" button in the PDF.
+
+Please proceed with payment at your earliest convenience.
+
+Do not hesitate to contact me if you have any questions or if you have already made the payment.
+
+Best regards,
+Professor+
+"""
+    }
+    
+    tab_fr, tab_en, tab_carole = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier"])
     with tab_fr:
         subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="reminder_subject_fr")
         body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="reminder_body_fr")
     with tab_en:
         subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="reminder_subject_en")
         body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="reminder_body_en")
+    with tab_carole:
+        if carole_details_rem:
+            st.caption(f"📋 Détails heures Notion : **{carole_details_rem}**")
+        subject_carole = st.text_input("📝 Subject", value=carole_reminder_template["subject"], key="reminder_subject_carole")
+        body_carole = st.text_area("✉️ Message", value=carole_reminder_template["body"], height=250, key="reminder_body_carole")
     
     st.markdown("---")
     
@@ -1931,7 +2010,8 @@ Professor+
                 secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
                 custom_subject=subject, custom_body=body,
                 selected_families=selected_names,
-                send_to_test=True, callback=callback
+                send_to_test=True, callback=callback,
+                custom_subject_carole=subject_carole, custom_body_carole=body_carole
             )
             
             if result["success"]:
@@ -1961,7 +2041,8 @@ Professor+
             secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
             custom_subject=subject, custom_body=body,
             selected_families=selected_names,
-            send_to_test=False, callback=callback
+            send_to_test=False, callback=callback,
+            custom_subject_carole=subject_carole, custom_body_carole=body_carole
         )
         
         if result["success"]:

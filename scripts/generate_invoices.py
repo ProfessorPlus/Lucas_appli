@@ -180,7 +180,7 @@ def _next_invoice_number(counter_root, invoice_date):
 
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
-                       parent_name, logo_path, counter_root, today):
+                       parent_name, logo_path, counter_root, today, is_notion_custom=False):
     """
     Génère un PDF de facture.
     
@@ -222,7 +222,8 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, "Soutien scolaire sur-mesure")
+        tagline = "Soutien scolaire" if is_notion_custom else "Soutien scolaire sur-mesure"
+        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
 
         canvas.setFont(FONT_SANS, 10)
         txt = "Facture"
@@ -277,26 +278,45 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     flow.append(Spacer(1, 10 * mm))
 
     # TABLEAU
-    data_tbl = [
-        [
-            Paragraph("Date", st_header),
-            Paragraph("Description", st_header),
-            Paragraph("Frais", st_header),
+    if is_notion_custom:
+        # Custom: pas de colonne Date
+        data_tbl = [
+            [
+                Paragraph("Description", st_header),
+                Paragraph("Frais", st_header),
+            ]
         ]
-    ]
+        
+        for item in items:
+            desc_cell = item["description"]
+            amt_cell = f'{item["amount"]:.2f} {currency}'
+            data_tbl.append([
+                Paragraph(desc_cell, ParagraphStyle(name="c", fontName=FONT_SANS, fontSize=10)),
+                Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT, textColor=BRAND_GREEN)),
+            ])
+        
+        col_widths_tbl = [avail * 0.7, avail * 0.3]
+    else:
+        data_tbl = [
+            [
+                Paragraph("Date", st_header),
+                Paragraph("Description", st_header),
+                Paragraph("Frais", st_header),
+            ]
+        ]
 
-    for item in items:
-        date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
-        desc_cell = item["description"]
-        amt = float(item["amount"])
-        amount_cell = f"{amt:.2f} {currency}"
-        data_tbl.append([date_cell, desc_cell, amount_cell])
+    if not is_notion_custom:
+        for item in items:
+            date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
+            desc_cell = item["description"]
+            amt = float(item["amount"])
+            amount_cell = f"{amt:.2f} {currency}"
+            data_tbl.append([date_cell, desc_cell, amount_cell])
 
-    tbl = Table(
-        data_tbl,
-        colWidths=[30*mm, avail - 60*mm, 30*mm],
-        repeatRows=1,
-    )
+    if is_notion_custom:
+        tbl = Table(data_tbl, colWidths=col_widths_tbl, repeatRows=1)
+    else:
+        tbl = Table(data_tbl, colWidths=[30*mm, avail - 60*mm, 30*mm], repeatRows=1)
 
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
@@ -537,9 +557,11 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF
+                is_notion_custom = fam.get("source") == "notion_hors_tb"
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
-                    parent_name, logo_path, counter_root, today
+                    parent_name, logo_path, counter_root, today,
+                    is_notion_custom=is_notion_custom
                 )
                 factures_generees += 1
                 generated_files.append(output_path)

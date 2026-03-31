@@ -159,10 +159,14 @@ def _circle(c, cx, cy, r, fill):
 def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source):
     """Draw one complete page."""
     
-    total_eur = data.get("eur", 0) + data.get("chf_as_eur", 0)
+    total_eur_raw = data.get("eur", 0) + data.get("chf_as_eur", 0)
     total_hours = data.get("total_hours", 0)
     nb_lessons = data.get("nb_lessons", 0)
     details = data.get("details", [])
+    
+    # Utiliser la somme des montants détaillés (déjà arrondis) pour cohérence
+    total_eur_from_details = sum(d.get("amount_eur", 0) for d in details)
+    total_eur = total_eur_from_details if details else total_eur_raw
     
     y = PH - MY_TOP
     
@@ -235,7 +239,7 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
         (card1_w, "PROFESSEUR", teacher_name, TXT, 13),
         (card_sm, "LEÇONS", str(nb_lessons), NAVY, 22),
         (card_sm, "HEURES", f"{total_hours:.1f}h", NAVY, 22),
-        (card4_w, "TOTAL À PAYER", f"{total_eur:,.2f} €", GREEN, 18),
+        (card4_w, "TOTAL", f"{total_eur:,.2f} €", GREEN, 18),
     ]
     
     cx = MX

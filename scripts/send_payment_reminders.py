@@ -274,7 +274,8 @@ def get_unpaid_families_from_notion(secrets, callback=None, data=None, invoice_f
 def run_send_reminders(secrets, data, invoice_folder, data_dir,
                        custom_subject=None, custom_body=None,
                        selected_families=None, send_to_test=False,
-                       callback=None):
+                       callback=None,
+                       custom_subject_carole=None, custom_body_carole=None):
     def update(progress, message):
         if callback:
             callback(progress, message)
@@ -328,8 +329,21 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                 msg = MIMEMultipart()
                 msg['From'] = sender_email
                 msg['To'] = recipient
-                msg['Subject'] = subject
-                msg.attach(MIMEText(body, 'plain'))
+                
+                # Déterminer le template: Carole (notion_hors_tb) ou standard
+                is_carole = False
+                if data and custom_subject_carole:
+                    for fam in data.values():
+                        if fam.get("source") == "notion_hors_tb" and names_match(fam.get("parent_name", ""), family['parent_name']):
+                            is_carole = True
+                            break
+                
+                if is_carole:
+                    msg['Subject'] = custom_subject_carole
+                    msg.attach(MIMEText(custom_body_carole or body, 'plain'))
+                else:
+                    msg['Subject'] = subject
+                    msg.attach(MIMEText(body, 'plain'))
 
                 attached_count = 0
                 if invoice_folder and os.path.exists(invoice_folder):
