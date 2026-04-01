@@ -34,6 +34,7 @@ except ImportError:
 
 # ---------- CONSTANTES PDF ----------
 BRAND_BLUE = colors.Color(0.121, 0.227, 0.404)
+BRAND_GREEN = colors.Color(0.133, 0.545, 0.133)
 FONT_SANS, FONT_BOLD = "Helvetica", "Helvetica-Bold"
 LEFT = RIGHT = 20 * mm
 TOP = 48 * mm
