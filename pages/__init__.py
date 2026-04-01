@@ -1181,11 +1181,81 @@ def page_payment(ctx):
                 else:
                     st.error(f"❌ Erreur : {result['error']}")
             
-            # Bouton vers génération factures
+            # Bouton vers génération factures — INLINE
             if st.session_state.get("show_goto_invoices_tab2"):
                 st.markdown("---")
-                st.warning("⚠️ **Étape suivante** : Régénérez les factures pour ces familles.")
-                if st.button("📄 Aller à Régénérer les factures →", type="primary", width="stretch", key="goto_invoices_t2"):
+                st.success(st.session_state.get("payment_links_notice", "✅ Liens régénérés !"))
+                st.markdown("### 📄 Étape suivante — Générer la facture")
+                
+                regen_fam_ids = st.session_state.get("regenerated_families", [])
+                regen_names = [data[fid].get("parent_name", fid) for fid in regen_fam_ids if fid in data]
+                st.info(f"Famille(s) : **{', '.join(regen_names)}**")
+                
+                # Choix du dossier
+                mode_regen_t2, selected_folder_regen_t2 = _render_invoice_folder_selector(
+                    "invoice_folder_mode_regen_t2", "invoice_folder_select_regen_t2", default_to_latest=False
+                )
+                
+                candidates = [
+                    os.path.join(ctx["BASE_DIR"], "Professor_logo_dernier.png"),
+                    os.path.join(ctx["BASE_DIR"], "assets", "logo.png"),
+                ]
+                logo_path = next((p for p in candidates if os.path.exists(p)), None)
+                
+                if st.button("📄 Générer la facture maintenant", type="primary", width="stretch", key="gen_invoice_inline_t2"):
+                    familles_euros = ctx["load_familles_euros"]()
+                    
+                    target_folder_path = None
+                    force_new_folder = mode_regen_t2 == "Créer un nouveau dossier"
+                    if mode_regen_t2 == "Utiliser un dossier existant" and selected_folder_regen_t2:
+                        target_folder_path = _ensure_local_invoice_folder(selected_folder_regen_t2)
+                        if not target_folder_path:
+                            st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
+                            return
+                    
+                    progress = st.progress(0)
+                    status = st.empty()
+                    
+                    def callback(p, m):
+                        progress.progress(p)
+                        status.info(m)
+                    
+                    filtered_data = {fid: fam for fid, fam in data.items() if fid in regen_fam_ids}
+                    result = run_generate_invoices(
+                        filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
+                        target_folder_path=target_folder_path,
+                        force_new_folder=force_new_folder,
+                    )
+                    if result["success"]:
+                        folder_used = result.get("folder")
+                        st.success(f"✅ **{result['invoices']}** facture(s) générée(s) dans **{os.path.basename(folder_used)}**")
+                        if result.get("links_missing"):
+                            st.warning(f"⚠️ Liens manquants : {', '.join(result['links_missing'])}")
+                        st.session_state.show_goto_invoices_tab2 = False
+                        
+                        # Proposer le téléchargement
+                        generated_files = result.get("generated_files", [])
+                        if generated_files:
+                            import zipfile
+                            zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                                for fp in generated_files:
+                                    if os.path.exists(fp):
+                                        zf.write(fp, os.path.basename(fp))
+                            zip_buffer.seek(0)
+                            st.download_button(
+                                "⬇️ Télécharger la/les facture(s)",
+                                data=zip_buffer.getvalue(),
+                                file_name=f"Factures_regen.zip",
+                                mime="application/zip",
+                                key="dl_regen_invoices_t2",
+                            )
+                    else:
+                        st.error(f"❌ Erreur : {result['error']}")
+                
+                st.markdown("---")
+                st.caption("Ou, si vous préférez passer par la page Factures :")
+                if st.button("📄 Aller à la page Factures →", width="stretch", key="goto_invoices_t2"):
                     st.session_state.current_page = "invoices"
                     st.session_state.invoices_tab = "regen"
                     st.session_state.show_goto_invoices_tab2 = False
