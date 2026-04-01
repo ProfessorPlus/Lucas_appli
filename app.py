@@ -253,6 +253,34 @@ def get_month_year_from_folder(folder):
         return MONTHS_FR[datetime.now().month - 1], datetime.now().year
 
 # ===========================
+# SYNC CONFIG DEPUIS DRIVE AU DÉMARRAGE
+# ===========================
+# Sur Streamlit Cloud, le filesystem local est réinitialisé à chaque reboot.
+# Les fichiers de config (secrets.yaml, familles_euros.yaml, tarifs_speciaux.yaml)
+# sont sauvegardés sur Google Drive lors des modifications.
+# Au démarrage, on les re-télécharge pour restaurer les modifications (ex: auto_chf).
+if "drive_config_synced" not in st.session_state:
+    st.session_state.drive_config_synced = True
+    try:
+        from scripts.config_loader import is_streamlit_cloud
+        from scripts.storage_manager import download_from_drive
+        if is_streamlit_cloud():
+            config_files = [
+                ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
+                ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
+                ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
+            ]
+            for drive_name, local_path in config_files:
+                try:
+                    result = download_from_drive(drive_name, local_path, drive_folder="config")
+                    if result.get("success"):
+                        print(f"✅ Config restaurée depuis Drive : {drive_name}")
+                except Exception as e:
+                    print(f"⚠️ Config {drive_name} non trouvée sur Drive: {e}")
+    except Exception as e:
+        print(f"⚠️ Erreur sync config Drive au démarrage: {e}")
+
+# ===========================
 # SESSION STATE
 # ===========================
 if 'current_page' not in st.session_state:
