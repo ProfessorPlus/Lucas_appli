@@ -137,6 +137,7 @@ def fetch_notion_profs(secrets):
             devise_prof = _get_text(p.get("Devise prof", {}), "rich_text") or "EUR"
             heures_faites = _get_number(p.get("Heures faites", {}))
             email_client = _get_email(p.get("email client", {}))
+            email_prof = _get_email(p.get("email prof", {}))
             details_heures = _get_text(p.get("Détails heures", {}), "rich_text")
             langue = _get_text(p.get("Langue", {}), "rich_text") or _get_text(p.get("Langue", {}), "select") or ""
             language = "en" if str(langue).strip().lower() in {"anglais", "english", "en"} else "fr"
@@ -155,6 +156,7 @@ def fetch_notion_profs(secrets):
                 "devise_prof": devise_prof.upper(),
                 "heures_faites": heures_faites,
                 "email_client": email_client,
+                "email_prof": email_prof,
                 "details_heures": details_heures,
                 "language": language,
             })

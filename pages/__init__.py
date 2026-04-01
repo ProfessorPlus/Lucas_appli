@@ -3290,6 +3290,75 @@ def page_config(ctx):
             ctx["save_secrets"](secrets)
             st.success("✅ Configuration email sauvegardée !")
 
+def _send_prof_pdf(secrets, teacher_name, recipient_email, pdf_bytes, filename, mois_label, silent=False):
+    """Envoie un PDF de fiche de paie à un professeur par email.
+    
+    Args:
+        secrets: config avec gmail.email et gmail.app_password
+        teacher_name: nom du prof
+        recipient_email: email du destinataire
+        pdf_bytes: contenu du PDF en bytes
+        filename: nom du fichier PDF
+        mois_label: ex "Mars 2026"
+        silent: si True, ne pas afficher de messages Streamlit (mode batch)
+    
+    Returns:
+        bool: True si envoyé avec succès
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    
+    try:
+        gmail_config = secrets.get("gmail", {})
+        sender_email = gmail_config.get("email")
+        app_password = gmail_config.get("app_password")
+        
+        if not sender_email or not app_password:
+            if not silent:
+                st.error("❌ Configuration email manquante dans secrets.yaml")
+            return False
+        
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = recipient_email
+        msg["Subject"] = f"Fiche de paie — {mois_label}"
+        
+        body = f"""Bonjour {teacher_name.split()[-1] if " " in teacher_name else teacher_name},
+
+Veuillez trouver ci-joint votre fiche de paie pour {mois_label}.
+
+N'hésitez pas à me contacter si vous avez des questions.
+
+Cordialement,
+Professor+
+"""
+        msg.attach(MIMEText(body, "plain"))
+        
+        # Attacher le PDF
+        part = MIMEBase("application", "pdf")
+        part.set_payload(pdf_bytes)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f"attachment; filename={filename}")
+        msg.attach(part)
+        
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, app_password)
+        server.sendmail(sender_email, recipient_email, msg.as_string())
+        server.quit()
+        
+        if not silent:
+            st.success(f"✅ Fiche envoyée à {teacher_name} ({recipient_email})")
+        return True
+    except Exception as e:
+        if not silent:
+            st.error(f"❌ Erreur envoi à {teacher_name}: {e}")
+        return False
+
+
 def page_profs(ctx):
     import streamlit as st
     import os
@@ -3407,14 +3476,60 @@ def page_profs(ctx):
     ]
     logo_path = next((p for p in candidates if os.path.exists(p)), None)
 
+    # ===========================
+    # CHARGEMENT DES EMAILS PROFS
+    # ===========================
+    teacher_emails_map = {}  # teacher_name -> email
+    
+    # 1) Depuis TutorBird (fichier teacher_emails.json sauvé à l'extraction)
+    try:
+        tb_emails_path = os.path.join(ctx["DATA_DIR"], "teacher_emails.json")
+        if os.path.exists(tb_emails_path):
+            with open(tb_emails_path, "r", encoding="utf-8") as f:
+                tb_emails = json.load(f)
+                teacher_emails_map.update(tb_emails)
+        elif is_streamlit_cloud():
+            tb_emails = storage_load_json("teacher_emails.json", folder="data")
+            if tb_emails:
+                teacher_emails_map.update(tb_emails)
+    except Exception as _e:
+        print(f"⚠️ Erreur chargement emails TutorBird: {_e}")
+    
+    # 2) Depuis Notion (profs hors TutorBird — colonne "email prof")
+    try:
+        notion_result = fetch_notion_profs(secrets)
+        if notion_result.get("success"):
+            for entry in notion_result["entries"]:
+                prof_name = entry.get("professeur", "")
+                prof_email = entry.get("email_prof", "")
+                if prof_name and prof_email and prof_name not in teacher_emails_map:
+                    teacher_emails_map[prof_name] = prof_email
+    except Exception as _e:
+        print(f"⚠️ Erreur chargement emails Notion profs: {_e}")
+    
+    # 3) Matching normalisé (les noms TutorBird / secrets.yaml ne sont pas toujours identiques)
+    from scripts.recap_profs import norm as _norm_prof
+    teacher_emails_normalized = {}
+    for name, email in teacher_emails_map.items():
+        teacher_emails_normalized[_norm_prof(name)] = email
+    
+    def _get_teacher_email(teacher_name):
+        """Retourne l'email du prof, avec matching normalisé."""
+        if teacher_name in teacher_emails_map:
+            return teacher_emails_map[teacher_name]
+        normed = _norm_prof(teacher_name)
+        return teacher_emails_normalized.get(normed, "")
+
     for tname in sorted(teachers.keys()):
         tdata = teachers[tname]
         if tdata["nb_lessons"] == 0:
             continue
 
         total = tdata["eur"] + tdata["chf_as_eur"]
+        teacher_email = _get_teacher_email(tname)
+        email_badge = f" — 📧 {teacher_email}" if teacher_email else " — ❌ Pas d'email"
 
-        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{total:.2f} €**", expanded=False):
+        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{total:.2f} €**{email_badge}", expanded=False):
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.metric("Familles EUR", f"{tdata['eur']:.2f} €")
@@ -3443,13 +3558,83 @@ def page_profs(ctx):
             filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
 
             pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end)
-            st.download_button(
-                label=f"📥 Télécharger le PDF de {tname}",
-                data=pdf_bytes,
-                file_name=filename,
-                mime="application/pdf",
-                key=f"dl_pdf_{safe_name}",
-            )
+            col_dl, col_send = st.columns(2)
+            with col_dl:
+                st.download_button(
+                    label=f"📥 Télécharger le PDF",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                    key=f"dl_pdf_{safe_name}",
+                )
+            with col_send:
+                if teacher_email:
+                    if st.button(f"📧 Envoyer à {teacher_email}", key=f"send_prof_{safe_name}"):
+                        _send_prof_pdf(secrets, tname, teacher_email, pdf_bytes, filename, mois_label)
+                else:
+                    st.caption("❌ Email non disponible")
+
+    # ===========================
+    # ENVOI GLOBAL
+    # ===========================
+    st.markdown("---")
+    st.markdown('<div class="section-title">📧 Envoyer les fiches de paie par email</div>', unsafe_allow_html=True)
+
+    # Lister les profs avec email
+    profs_with_email = []
+    profs_without_email = []
+    for tname in sorted(teachers.keys()):
+        tdata = teachers[tname]
+        if tdata["nb_lessons"] == 0:
+            continue
+        if tname == "Parisi Lucas":
+            continue
+        email = _get_teacher_email(tname)
+        if email:
+            profs_with_email.append({"name": tname, "email": email, "data": tdata})
+        else:
+            profs_without_email.append(tname)
+
+    if profs_with_email:
+        st.info(f"📧 **{len(profs_with_email)}** professeur(s) avec email — prêts à recevoir leur fiche")
+        for p in profs_with_email:
+            st.caption(f"• {p['name']} → {p['email']}")
+    if profs_without_email:
+        st.warning(f"⚠️ **{len(profs_without_email)}** professeur(s) sans email : {', '.join(profs_without_email)}")
+
+    col_test, col_real = st.columns(2)
+    with col_test:
+        if st.button("📧 Envoyer un test à moi-même", width="stretch", key="send_all_profs_test"):
+            gmail_config = secrets.get("gmail", {})
+            test_email = gmail_config.get("email")
+            if not test_email:
+                st.error("❌ Email Gmail non configuré dans secrets.yaml")
+            else:
+                sent = 0
+                for p in profs_with_email:
+                    pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                    fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
+                    ok = _send_prof_pdf(secrets, p["name"], test_email, pdf_b, fname, mois_label, silent=True)
+                    if ok:
+                        sent += 1
+                st.success(f"✅ Test envoyé à {test_email} — {sent}/{len(profs_with_email)} fiche(s)")
+
+    with col_real:
+        if st.button("📧 Envoyer à tous les profs", type="primary", width="stretch", key="send_all_profs_real"):
+            sent = 0
+            errors = []
+            for p in profs_with_email:
+                pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
+                ok = _send_prof_pdf(secrets, p["name"], p["email"], pdf_b, fname, mois_label, silent=True)
+                if ok:
+                    sent += 1
+                else:
+                    errors.append(p["name"])
+            if errors:
+                st.warning(f"⚠️ {sent}/{len(profs_with_email)} envoyé(s) — Erreurs : {', '.join(errors)}")
+            else:
+                st.success(f"✅ {sent}/{len(profs_with_email)} fiche(s) de paie envoyée(s) !")
 
     # ===========================
     # TÉLÉCHARGEMENTS GLOBAUX

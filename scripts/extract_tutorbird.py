@@ -79,6 +79,47 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
         for p in parents_raw:
             parents.setdefault(p["FamilyID"], []).append(p)
         
+        # ===============================
+        # EXTRACTION DES EMAILS PROFS
+        # ===============================
+        update(40, "👨‍🏫 Récupération des emails professeurs...")
+        
+        teacher_emails = {}
+        try:
+            # Headers spécifiques requis par l'API TutorBird pour /teachers
+            teacher_headers = {
+                "Authorization": f"Bearer {TB_API_KEY}",
+                "Content-Type": "application/json",
+                "x-schoolbox-client-version": "1494",
+                "x-schoolbox-version": "main",
+                "origin": "https://app.tutorbird.com",
+            }
+            r = requests.get(
+                f"{TB_BASE}/teachers",
+                headers=teacher_headers,
+                params={"orderby": "FullName"},
+                timeout=30,
+            )
+            if r.ok:
+                teachers_raw = r.json().get("ItemSubset") or r.json().get("Items") or r.json()
+                if isinstance(teachers_raw, list):
+                    for t in teachers_raw:
+                        # FullName est le champ principal, Name en fallback
+                        t_name = t.get("FullName") or t.get("Name") or ""
+                        t_email = ""
+                        email_obj = t.get("Email")
+                        if isinstance(email_obj, dict):
+                            t_email = email_obj.get("EmailAddress", "")
+                        elif isinstance(email_obj, str):
+                            t_email = email_obj
+                        if t_name and t_email:
+                            teacher_emails[t_name] = t_email
+                    print(f"📧 {len(teacher_emails)} emails profs récupérés depuis TutorBird")
+            else:
+                print(f"⚠️ API /teachers non disponible ({r.status_code}) — les emails profs ne seront pas extraits")
+        except Exception as e:
+            print(f"⚠️ Erreur extraction emails profs: {e}")
+        
         # Fonction pour choisir le bon parent
         def choose_parent(fam_id):
             plist = parents.get(fam_id, [])
@@ -200,6 +241,17 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
         output_path = os.path.join(data_dir, "full_output_tb_SIMPLE.json")
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(families, f, indent=2, ensure_ascii=False)
+        
+        # Sauvegarder les emails des profs TutorBird
+        if teacher_emails:
+            teacher_emails_path = os.path.join(data_dir, "teacher_emails.json")
+            with open(teacher_emails_path, "w", encoding="utf-8") as f:
+                json.dump(teacher_emails, f, indent=2, ensure_ascii=False)
+            if STORAGE_AVAILABLE:
+                try:
+                    save_json("teacher_emails.json", teacher_emails, folder="data")
+                except Exception:
+                    pass
         
         # Sauvegarde Google Drive (si disponible et sur le cloud)
         drive_saved = False
