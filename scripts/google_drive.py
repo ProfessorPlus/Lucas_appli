@@ -130,26 +130,43 @@ def get_credentials():
     Ordre de priorité:
     1) OAuth utilisateur réel (recommandé)
     2) Service account (fallback)
+    
+    Les credentials sont cachées pour éviter de retenter OAuth à chaque appel.
     """
+    # Cache pour éviter les appels répétés (surtout le OAuth qui échoue)
+    if not hasattr(get_credentials, "_cached"):
+        get_credentials._cached = None
+    if get_credentials._cached is not None:
+        return get_credentials._cached
+    
     creds = _get_oauth_credentials_from_secrets()
     if creds:
         print("✅ Google Drive via OAuth utilisateur")
+        get_credentials._cached = creds
         return creds
 
     creds = _get_service_account_credentials()
     if creds:
         print("✅ Google Drive via service account (fallback)")
+        get_credentials._cached = creds
         return creds
 
     return None
 
 
 def get_drive_service():
-    """Crée le service Google Drive."""
+    """Crée le service Google Drive (avec cache)."""
+    if not hasattr(get_drive_service, "_cached"):
+        get_drive_service._cached = None
+    if get_drive_service._cached is not None:
+        return get_drive_service._cached
+    
     creds = get_credentials()
     if not creds:
         return None
-    return build('drive', 'v3', credentials=creds, cache_discovery=False)
+    service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    get_drive_service._cached = service
+    return service
 
 
 # ===========================
