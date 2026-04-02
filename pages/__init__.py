@@ -1255,6 +1255,11 @@ def page_payment(ctx):
                         # Proposer le téléchargement
                         generated_files = result.get("generated_files", [])
                         if generated_files:
+                            # Nom du ZIP basé sur les familles
+                            regen_label = "_".join(n.replace(" ", "_") for n in regen_names[:3])
+                            if len(regen_names) > 3:
+                                regen_label += f"_+{len(regen_names)-3}"
+                            
                             import zipfile
                             zip_buffer = io.BytesIO()
                             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1265,7 +1270,7 @@ def page_payment(ctx):
                             st.download_button(
                                 "⬇️ Télécharger la/les facture(s)",
                                 data=zip_buffer.getvalue(),
-                                file_name=f"Factures_regen.zip",
+                                file_name=f"Factures_{regen_label}.zip",
                                 mime="application/zip",
                                 key="dl_regen_invoices_t2",
                             )

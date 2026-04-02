@@ -258,7 +258,8 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    left_band = Paragraph(TAGLINE_LEFT.replace("\n", "<br/>"), st_sub)
+    tagline_text = "Soutien scolaire" if is_notion_custom else TAGLINE_LEFT
+    left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
     middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
@@ -371,15 +372,21 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         ("BOTTOMPADDING", (0, 0), (-1, 0), 14),
 
         ("VALIGN", (0, 1), (-1, -1), "MIDDLE"),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),
-        ("ALIGN", (1, 1), (1, -1), "CENTER"),
-        ("ALIGN", (2, 1), (2, -1), "CENTER"),
-
         ("TOPPADDING", (0, 1), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 1), (-1, -1), 8),
 
         ("LINEBELOW", (0, 1), (-1, -1), 0.35, colors.lightgrey),
     ]
+    
+    if is_notion_custom:
+        # 2 colonnes : Description (LEFT), Frais (RIGHT)
+        tbl_style_cmds.append(("ALIGN", (0, 1), (0, -1), "LEFT"))
+        tbl_style_cmds.append(("ALIGN", (1, 1), (1, -1), "RIGHT"))
+    else:
+        # 3 colonnes : Date (CENTER), Description (LEFT), Frais (RIGHT)
+        tbl_style_cmds.append(("ALIGN", (0, 1), (0, -1), "CENTER"))
+        tbl_style_cmds.append(("ALIGN", (1, 1), (1, -1), "LEFT"))
+        tbl_style_cmds.append(("ALIGN", (2, 1), (2, -1), "RIGHT"))
 
     # Style the separator row if previous items were added
     if previous_items and not is_notion_custom and 'prev_separator_row_idx' in dir():
@@ -681,8 +688,10 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     factures_generees += 1
                     generated_files.append(output_path)
+                    print(f"   ✅ PDF créé: {output_path} ({os.path.getsize(output_path)} bytes)")
                 else:
-                    print(f"⚠️ PDF non créé pour {parent_name}: {output_path}")
+                    print(f"   ❌ PDF non créé pour {parent_name}: {output_path}")
+                    print(f"      exists={os.path.exists(output_path)}, fam_base_dir exists={os.path.exists(fam_base_dir)}")
             
             # ===========================
             # MODE NORMAL : une facture par famille/prof
