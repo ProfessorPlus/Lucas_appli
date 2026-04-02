@@ -431,8 +431,15 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     # BUILD PDF
     try:
         doc.build(flow, onFirstPage=on_page, onLaterPages=on_page)
-    except:
+    except Exception as build_err:
+        print(f"❌ Erreur génération PDF {output_path}: {build_err}")
         traceback.print_exc()
+        # Supprimer le fichier partiel s'il existe
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
 
 
 def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, logo_path=None, callback=None, target_folder_path=None, force_new_folder=False, previous_unpaid_data=None, previous_month_label=None):
@@ -522,9 +529,19 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         year_str = today.strftime("%Y")
         month_str = MONTHS_FR[today.month - 1]
         
-        # Dossiers
-        invoice_root = os.path.join(base_dir, "Factures")
-        counter_root = os.path.join(base_dir, "invoice_counters")
+        # Dossiers — sur Streamlit Cloud, le repo est read-only, utiliser /tmp/
+        try:
+            from scripts.config_loader import is_streamlit_cloud as _is_cloud_check
+            _on_cloud = _is_cloud_check()
+        except Exception:
+            _on_cloud = not os.access(base_dir, os.W_OK)
+        
+        if _on_cloud:
+            invoice_root = "/tmp/Factures"
+            counter_root = "/tmp/invoice_counters"
+        else:
+            invoice_root = os.path.join(base_dir, "Factures")
+            counter_root = os.path.join(base_dir, "invoice_counters")
         
         # Utiliser le dossier cible si spécifié
         if target_folder_path and os.path.exists(target_folder_path):
@@ -661,8 +678,11 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     previous_items=prev_items_for_fam if prev_items_for_fam else None,
                     previous_month_label=previous_month_label,
                 )
-                factures_generees += 1
-                generated_files.append(output_path)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    factures_generees += 1
+                    generated_files.append(output_path)
+                else:
+                    print(f"⚠️ PDF non créé pour {parent_name}: {output_path}")
             
             # ===========================
             # MODE NORMAL : une facture par famille/prof
@@ -771,8 +791,11 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         previous_items=prev_items_for_teacher if prev_items_for_teacher else None,
                         previous_month_label=previous_month_label,
                     )
-                    factures_generees += 1
-                    generated_files.append(output_path)
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        factures_generees += 1
+                        generated_files.append(output_path)
+                    else:
+                        print(f"⚠️ PDF non créé pour {parent_name}/{teacher_display}: {output_path}")
                 
         # ===============================
         # UPLOAD VERS GOOGLE DRIVE (si cloud)

@@ -1304,7 +1304,7 @@ def _render_payment_options(ctx, secrets, prefix):
     # Méthodes de paiement (communes aux deux modes)
     st.markdown("### 💳 Méthodes de paiement")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
 
     with col1:
         pm_card = st.checkbox("💳 Carte bancaire", value=True, key=f"pm_card_{prefix}")
@@ -1314,29 +1314,12 @@ def _render_payment_options(ctx, secrets, prefix):
         pm_apple = st.checkbox("🍎 Apple Pay", value=True, key=f"pm_apple_{prefix}")
         pm_google = st.checkbox("🤖 Google Pay", value=True, key=f"pm_google_{prefix}")
 
-    with col3:
-        col_rev, col_help = st.columns([4, 1])
-        with col_rev:
-            pm_revolut = st.checkbox("🔄 Revolut Pay", value=True, key=f"pm_revolut_{prefix}")
-        with col_help:
-            st.markdown("""
-            <span title="Revolut Pay est géré via les réglages Stripe" style="cursor: help; color: #666;">❓</span>
-            """, unsafe_allow_html=True)
-        pm_klarna = st.checkbox("🟢 Klarna", value=True, key=f"pm_klarna_{prefix}")
-
-    with col4:
-        pm_twint = st.checkbox("🇨🇭 Twint", value=True, key=f"pm_twint_{prefix}")
-
     payment_method_types = []
 
     if pm_card or pm_apple or pm_google:
         payment_method_types.append("card")
     if pm_link:
         payment_method_types.append("link")
-    if pm_klarna:
-        payment_method_types.append("klarna")
-    if pm_twint:
-        payment_method_types.append("twint")
 
     if not payment_method_types:
         payment_method_types = ["card"]
