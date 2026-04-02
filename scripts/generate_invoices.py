@@ -224,9 +224,8 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        tagline = "" if is_notion_custom else "Soutien scolaire sur-mesure"
-        if tagline:
-            canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
+        tagline = "Soutien" if is_notion_custom else "Soutien scolaire sur-mesure"
+        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
 
         canvas.setFont(FONT_SANS, 10)
         txt = "Facture"
@@ -259,11 +258,8 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    tagline_text = "" if is_notion_custom else TAGLINE_LEFT
-    if tagline_text:
-        left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
-    else:
-        left_band = Paragraph("", st_sub)
+    tagline_text = "Soutien" if is_notion_custom else TAGLINE_LEFT
+    left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
     middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT

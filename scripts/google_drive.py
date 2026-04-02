@@ -450,6 +450,7 @@ def download_json(filename, folder_id=None):
 def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
     """
     Synchronise un dossier local vers Google Drive.
+    Utilise directement le service Drive (pas de sous-appels à get_drive_service).
     """
     service = get_drive_service()
     if not service:
@@ -457,7 +458,10 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
 
     try:
         drive_folder_name = drive_folder_name or os.path.basename(local_folder)
+        print(f"📁 sync_folder_to_drive: {local_folder} → Drive/{drive_folder_name} (parent={parent_id})")
+        
         folder_id = find_or_create_folder(service, drive_folder_name, parent_id)
+        print(f"   📁 Dossier racine Drive ID: {folder_id}")
 
         uploaded = 0
         errors = []
@@ -469,22 +473,62 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
             if rel_path != '.':
                 for part in rel_path.split(os.sep):
                     current_folder_id = find_or_create_folder(service, part, current_folder_id)
+                    print(f"   📁 Sous-dossier '{part}' → Drive ID: {current_folder_id}")
 
             for filename in files:
                 local_path = os.path.join(root, filename)
-                print(f"   📤 Upload: {filename} → folder_id={current_folder_id}")
-                result = upload_file(local_path, filename, current_folder_id)
-                if result['success']:
+                file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+                print(f"   📤 Upload: {filename} ({file_size} bytes) → folder_id={current_folder_id}")
+                
+                try:
+                    # Upload directement avec le service (pas via upload_file)
+                    drive_filename = filename
+                    existing = find_file(service, drive_filename, current_folder_id)
+                    
+                    mime_type = 'application/octet-stream'
+                    if local_path.endswith('.pdf'):
+                        mime_type = 'application/pdf'
+                    elif local_path.endswith('.json'):
+                        mime_type = 'application/json'
+                    
+                    media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
+                    
+                    if existing:
+                        file = service.files().update(
+                            fileId=existing['id'],
+                            media_body=media,
+                            **_file_kwargs(),
+                        ).execute()
+                        print(f"   ✅ Mis à jour: {filename} (file_id={file.get('id')})")
+                    else:
+                        file_metadata = {
+                            'name': drive_filename,
+                            'parents': [current_folder_id]
+                        }
+                        file = service.files().create(
+                            body=file_metadata,
+                            media_body=media,
+                            fields='id',
+                            **_file_kwargs(),
+                        ).execute()
+                        print(f"   ✅ Créé: {filename} (file_id={file.get('id')})")
+                    
                     uploaded += 1
-                    print(f"   ✅ Uploadé: {filename} (file_id={result.get('file_id')})")
-                else:
-                    err_msg = f"{filename}: {result.get('error', 'unknown')}"
+                    
+                except Exception as upload_err:
+                    err_msg = f"{filename}: {upload_err}"
                     errors.append(err_msg)
-                    print(f"   ❌ Échec upload: {err_msg}")
+                    print(f"   ❌ ERREUR UPLOAD: {err_msg}")
+                    import traceback
+                    traceback.print_exc()
 
+        print(f"📊 Sync terminé: {uploaded} uploadé(s), {len(errors)} erreur(s)")
         return {"success": True, "uploaded": uploaded, "errors": errors, "folder_id": folder_id}
 
     except Exception as e:
+        print(f"❌ ERREUR sync_folder_to_drive: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 
