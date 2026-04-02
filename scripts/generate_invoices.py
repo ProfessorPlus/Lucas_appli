@@ -810,17 +810,32 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
         # UPLOAD VERS GOOGLE DRIVE (si cloud)
         # ===============================
         drive_saved = False
-        print(f"🔍 DEBUG: STORAGE_AVAILABLE={STORAGE_AVAILABLE}, factures_generees={factures_generees}")
+        print(f"🔍 DEBUG UPLOAD: STORAGE_AVAILABLE={STORAGE_AVAILABLE}, factures_generees={factures_generees}, month_folder_path={month_folder_path}")
+        
+        # Lister les fichiers dans le dossier pour vérifier qu'ils existent
+        if os.path.exists(month_folder_path):
+            for dirpath, dirnames, filenames in os.walk(month_folder_path):
+                for fn in filenames:
+                    fp = os.path.join(dirpath, fn)
+                    print(f"   📄 Fichier local: {fp} ({os.path.getsize(fp)} bytes)")
+        else:
+            print(f"   ❌ DOSSIER N'EXISTE PAS: {month_folder_path}")
+        
         if STORAGE_AVAILABLE and factures_generees > 0:
             update(95, "☁️ Upload vers Google Drive...")
             try:
                 result = save_invoice_folder(month_folder_path)
+                print(f"🔍 DEBUG UPLOAD result: {result}")
                 if result.get("success"):
                     drive_saved = True
                     uploaded_count = result.get("uploaded", 0)
                     update(98, f"☁️ {uploaded_count} fichiers uploadés sur Drive")
+                else:
+                    print(f"❌ Upload Drive échoué: {result}")
             except Exception as e:
                 print(f"⚠️ Erreur upload Drive: {e}")
+                import traceback
+                traceback.print_exc()
         
         update(100, "✅ Terminé !")
         

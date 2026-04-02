@@ -1247,7 +1247,13 @@ def page_payment(ctx):
                     )
                     if result["success"]:
                         folder_used = result.get("folder")
-                        st.success(f"✅ **{result['invoices']}** facture(s) générée(s) dans **{os.path.basename(folder_used)}**")
+                        nb_invoices = result.get("invoices", 0)
+                        drive_saved = result.get("drive_saved", False)
+                        st.success(f"✅ **{nb_invoices}** facture(s) générée(s) dans **{os.path.basename(folder_used)}**")
+                        if drive_saved:
+                            st.caption("☁️ Uploadé sur Google Drive")
+                        else:
+                            st.warning(f"⚠️ PDF non uploadé sur Drive (invoices={nb_invoices}, drive_saved={drive_saved}, folder={folder_used})")
                         if result.get("links_missing"):
                             st.warning(f"⚠️ Liens manquants : {', '.join(result['links_missing'])}")
                         st.session_state.show_goto_invoices_tab2 = False
