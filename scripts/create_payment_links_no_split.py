@@ -207,6 +207,10 @@ def run_create_payment_links_no_split(
             update(progress, f"🔄 {parent_name} ({current}/{total_families})")
 
             currency = "eur" if is_eur_family(parent_name) else "chf"
+            # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
+            fam_currency = (fam.get("currency") or "").lower()
+            if fam_currency in ("eur", "chf"):
+                currency = fam_currency
             lessons = fam.get("lessons", [])
             if not lessons:
                 continue
