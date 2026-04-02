@@ -131,41 +131,43 @@ def get_credentials():
     1) OAuth utilisateur réel (recommandé)
     2) Service account (fallback)
     
-    Les credentials sont cachées pour éviter de retenter OAuth à chaque appel.
+    Les credentials sont cachées dans st.session_state.
     """
-    # Cache pour éviter les appels répétés (surtout le OAuth qui échoue)
-    if not hasattr(get_credentials, "_cached"):
-        get_credentials._cached = None
-    if get_credentials._cached is not None:
-        return get_credentials._cached
+    # Cache via st.session_state (survit aux reruns Streamlit)
+    if hasattr(st, 'session_state') and '_drive_credentials' in st.session_state:
+        return st.session_state._drive_credentials
     
     creds = _get_oauth_credentials_from_secrets()
     if creds:
         print("✅ Google Drive via OAuth utilisateur")
-        get_credentials._cached = creds
+        if hasattr(st, 'session_state'):
+            st.session_state._drive_credentials = creds
         return creds
 
     creds = _get_service_account_credentials()
     if creds:
         print("✅ Google Drive via service account (fallback)")
-        get_credentials._cached = creds
+        if hasattr(st, 'session_state'):
+            st.session_state._drive_credentials = creds
         return creds
 
     return None
 
 
+# Cache du service Drive (au niveau module, pour la durée du script run)
+_drive_service_cache = None
+
 def get_drive_service():
-    """Crée le service Google Drive (avec cache)."""
-    if not hasattr(get_drive_service, "_cached"):
-        get_drive_service._cached = None
-    if get_drive_service._cached is not None:
-        return get_drive_service._cached
+    """Crée le service Google Drive (avec cache module-level)."""
+    global _drive_service_cache
+    if _drive_service_cache is not None:
+        return _drive_service_cache
     
     creds = get_credentials()
     if not creds:
         return None
     service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-    get_drive_service._cached = service
+    _drive_service_cache = service
     return service
 
 
@@ -470,11 +472,15 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
 
             for filename in files:
                 local_path = os.path.join(root, filename)
+                print(f"   📤 Upload: {filename} → folder_id={current_folder_id}")
                 result = upload_file(local_path, filename, current_folder_id)
                 if result['success']:
                     uploaded += 1
+                    print(f"   ✅ Uploadé: {filename} (file_id={result.get('file_id')})")
                 else:
-                    errors.append(f"{filename}: {result['error']}")
+                    err_msg = f"{filename}: {result.get('error', 'unknown')}"
+                    errors.append(err_msg)
+                    print(f"   ❌ Échec upload: {err_msg}")
 
         return {"success": True, "uploaded": uploaded, "errors": errors, "folder_id": folder_id}
 

@@ -224,8 +224,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        tagline = "Soutien scolaire" if is_notion_custom else "Soutien scolaire sur-mesure"
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
+        tagline = "" if is_notion_custom else "Soutien scolaire sur-mesure"
+        if tagline:
+            canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
 
         canvas.setFont(FONT_SANS, 10)
         txt = "Facture"
@@ -258,8 +259,11 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    tagline_text = "Soutien scolaire" if is_notion_custom else TAGLINE_LEFT
-    left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
+    tagline_text = "" if is_notion_custom else TAGLINE_LEFT
+    if tagline_text:
+        left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
+    else:
+        left_band = Paragraph("", st_sub)
     middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
@@ -295,7 +299,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
             amt_cell = f'{item["amount"]:.2f} {currency}'
             data_tbl.append([
                 Paragraph(desc_cell, ParagraphStyle(name="c", fontName=FONT_SANS, fontSize=10)),
-                Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT, textColor=BRAND_GREEN)),
+                Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_GREEN)),
             ])
         
         # Ajouter les cours impayés des mois précédents (notion custom)
@@ -315,7 +319,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                 amt_cell = f'{prev_item["amount"]:.2f} {currency}'
                 data_tbl.append([
                     Paragraph(desc_cell, ParagraphStyle(name="c2", fontName=FONT_SANS, fontSize=10)),
-                    Paragraph(amt_cell, ParagraphStyle(name="r2", fontName=FONT_BOLD, fontSize=10, alignment=TA_RIGHT, textColor=BRAND_GREEN)),
+                    Paragraph(amt_cell, ParagraphStyle(name="r2", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_GREEN)),
                 ])
         
         col_widths_tbl = [avail * 0.7, avail * 0.3]
@@ -379,9 +383,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     ]
     
     if is_notion_custom:
-        # 2 colonnes : Description (LEFT), Frais (RIGHT)
+        # 2 colonnes : Description (LEFT), Frais (CENTER sous le header)
         tbl_style_cmds.append(("ALIGN", (0, 1), (0, -1), "LEFT"))
-        tbl_style_cmds.append(("ALIGN", (1, 1), (1, -1), "RIGHT"))
+        tbl_style_cmds.append(("ALIGN", (1, 1), (1, -1), "CENTER"))
     else:
         # 3 colonnes : Date (CENTER), Description (LEFT), Frais (RIGHT)
         tbl_style_cmds.append(("ALIGN", (0, 1), (0, -1), "CENTER"))
