@@ -263,22 +263,37 @@ if "drive_config_synced" not in st.session_state:
     st.session_state.drive_config_synced = True
     try:
         from scripts.config_loader import is_streamlit_cloud
-        from scripts.storage_manager import download_from_drive
         if is_streamlit_cloud():
-            config_files = [
-                ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
-                ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
-                ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
-            ]
-            for drive_name, local_path in config_files:
-                try:
-                    result = download_from_drive(drive_name, local_path, drive_folder="config")
-                    if result.get("success"):
-                        print(f"✅ Config restaurée depuis Drive : {drive_name}")
-                except Exception as e:
-                    print(f"⚠️ Config {drive_name} non trouvée sur Drive: {e}")
+            # 1. Initialiser le storage (connexion Drive + structure dossiers)
+            try:
+                from scripts.storage_manager import init_storage, download_from_drive
+                init_result = init_storage()
+                if init_result.get("drive_connected"):
+                    print(f"✅ Google Drive connecté au démarrage")
+                else:
+                    print(f"⚠️ Drive init: {init_result.get('message', 'non connecté')}")
+            except Exception as e:
+                print(f"⚠️ Erreur init_storage: {e}")
+            
+            # 2. Restaurer les configs depuis Drive
+            try:
+                from scripts.storage_manager import download_from_drive
+                config_files = [
+                    ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
+                    ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
+                    ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
+                ]
+                for drive_name, local_path in config_files:
+                    try:
+                        result = download_from_drive(drive_name, local_path, drive_folder="config")
+                        if result.get("success"):
+                            print(f"✅ Config restaurée depuis Drive : {drive_name}")
+                    except Exception as e:
+                        print(f"⚠️ Config {drive_name} non trouvée sur Drive: {e}")
+            except Exception as e:
+                print(f"⚠️ Erreur sync config Drive: {e}")
     except Exception as e:
-        print(f"⚠️ Erreur sync config Drive au démarrage: {e}")
+        print(f"⚠️ Erreur sync Drive au démarrage: {e}")
 
 # ===========================
 # SESSION STATE
