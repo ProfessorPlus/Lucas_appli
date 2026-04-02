@@ -828,12 +828,21 @@ def page_payment(ctx):
     # ===========================
     # VÉRIFICATION DES PROFS AVANT TOUT
     # ===========================
-    # Récupérer tous les profs de TutorBird
+    # Récupérer tous les profs de TutorBird (exclure ceux venant de Notion hors TB)
     tutorbird_teachers = set()
+    notion_hors_tb_teachers = set()
     for fam_id, fam in data.items():
+        is_notion_source = (
+            fam.get("source") in ("notion_hors_tb", "notion_hors_tutorbird")
+            or fam.get("is_hors_tutorbird")
+        )
         for L in fam.get("lessons", []):
             teacher = L.get("teacher", "")
-            if teacher:
+            if not teacher:
+                continue
+            if is_notion_source or L.get("source") == "notion_hors_tb":
+                notion_hors_tb_teachers.add(teacher)
+            else:
                 tutorbird_teachers.add(teacher)
     
     # Fonction de normalisation pour comparaison
@@ -893,7 +902,10 @@ def page_payment(ctx):
         
         st.markdown("---")
     else:
-        st.success(f"✅ **{len(matched_teachers)} professeur(s)** - Tous les profs TutorBird sont configurés")
+        msg = f"✅ **{len(matched_teachers)} professeur(s)** - Tous les profs TutorBird sont configurés"
+        if notion_hors_tb_teachers:
+            msg += f"  •  **{len(notion_hors_tb_teachers)}** prof(s) hors TutorBird (Notion)"
+        st.success(msg)
     
     # ===========================
     # ONGLETS
