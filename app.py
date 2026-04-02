@@ -23,7 +23,6 @@ from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
 from scripts.storage_manager import list_invoice_folders
-from scripts.config_loader import is_streamlit_cloud
 
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
@@ -260,7 +259,11 @@ def get_month_year_from_folder(folder):
 # On restaure les configs et les dossiers de factures depuis Google Drive.
 if "drive_config_synced" not in st.session_state:
     st.session_state.drive_config_synced = True
-    if is_streamlit_cloud():
+    _is_cloud = (
+        os.environ.get("STREAMLIT_SHARING_MODE") == "true"
+        or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
+    )
+    if _is_cloud:
         # 1. Initialiser le storage (connexion Drive + structure dossiers)
         try:
             from scripts.storage_manager import init_storage, download_from_drive
