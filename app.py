@@ -23,6 +23,7 @@ from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
 from scripts.storage_manager import list_invoice_folders
+from scripts.config_loader import is_streamlit_cloud
 
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
@@ -256,44 +257,34 @@ def get_month_year_from_folder(folder):
 # SYNC CONFIG DEPUIS DRIVE AU DÉMARRAGE
 # ===========================
 # Sur Streamlit Cloud, le filesystem local est réinitialisé à chaque reboot.
-# Les fichiers de config (secrets.yaml, familles_euros.yaml, tarifs_speciaux.yaml)
-# sont sauvegardés sur Google Drive lors des modifications.
-# Au démarrage, on les re-télécharge pour restaurer les modifications (ex: auto_chf).
+# On restaure les configs et les dossiers de factures depuis Google Drive.
 if "drive_config_synced" not in st.session_state:
     st.session_state.drive_config_synced = True
-    try:
-        from scripts.config_loader import is_streamlit_cloud
-        if is_streamlit_cloud():
-            # 1. Initialiser le storage (connexion Drive + structure dossiers)
-            try:
-                from scripts.storage_manager import init_storage, download_from_drive
-                init_result = init_storage()
-                if init_result.get("drive_connected"):
-                    print(f"✅ Google Drive connecté au démarrage")
-                else:
-                    print(f"⚠️ Drive init: {init_result.get('message', 'non connecté')}")
-            except Exception as e:
-                print(f"⚠️ Erreur init_storage: {e}")
+    if is_streamlit_cloud():
+        # 1. Initialiser le storage (connexion Drive + structure dossiers)
+        try:
+            from scripts.storage_manager import init_storage, download_from_drive
+            init_result = init_storage()
+            if init_result.get("drive_connected"):
+                print("✅ Google Drive connecté au démarrage")
+            else:
+                print(f"⚠️ Drive init: {init_result.get('message', 'non connecté')}")
             
             # 2. Restaurer les configs depuis Drive
-            try:
-                from scripts.storage_manager import download_from_drive
-                config_files = [
-                    ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
-                    ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
-                    ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
-                ]
-                for drive_name, local_path in config_files:
-                    try:
-                        result = download_from_drive(drive_name, local_path, drive_folder="config")
-                        if result.get("success"):
-                            print(f"✅ Config restaurée depuis Drive : {drive_name}")
-                    except Exception as e:
-                        print(f"⚠️ Config {drive_name} non trouvée sur Drive: {e}")
-            except Exception as e:
-                print(f"⚠️ Erreur sync config Drive: {e}")
-    except Exception as e:
-        print(f"⚠️ Erreur sync Drive au démarrage: {e}")
+            config_files = [
+                ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
+                ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
+                ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
+            ]
+            for drive_name, local_path in config_files:
+                try:
+                    result = download_from_drive(drive_name, local_path, drive_folder="config")
+                    if result.get("success"):
+                        print(f"✅ Config restaurée depuis Drive : {drive_name}")
+                except Exception as e:
+                    print(f"⚠️ Config {drive_name} : {e}")
+        except Exception as e:
+            print(f"⚠️ Erreur sync Drive au démarrage: {e}")
 
 # ===========================
 # SESSION STATE
