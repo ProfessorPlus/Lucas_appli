@@ -863,8 +863,15 @@ def page_payment(ctx):
     missing_teachers = []
     matched_teachers = []
     
+    # Normaliser les noms des profs Notion pour comparaison
+    notion_teachers_normalized = {normalize_for_compare(t) for t in notion_hors_tb_teachers}
+    
     for tb_teacher in tutorbird_teachers:
         tb_norm = normalize_for_compare(tb_teacher)
+        
+        # Si ce prof est aussi dans Notion hors TB (même nom normalisé), on l'ignore
+        if tb_norm in notion_teachers_normalized:
+            continue
         
         # Vérifier match exact ou similaire
         found = False
