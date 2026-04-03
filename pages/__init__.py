@@ -16,7 +16,7 @@ from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
 from scripts.generate_invoices import run_generate_invoices
-from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics
+from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics, get_default_multimonth_template
 from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
@@ -26,6 +26,7 @@ from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_sing
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
 from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
+from scripts.fetch_unpaid_notion import fetch_unpaid_n2, deactivate_old_payment_links
 from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json
 from scripts.config_loader import is_streamlit_cloud
 from scripts.quotes_data import get_random_hadith, get_random_life_quote, get_progress_message
@@ -1507,13 +1508,13 @@ def page_invoices(ctx):
             st.warning("⚠️ Logo non trouvé")
 
         # ===========================
-        # OPTION : INCLURE LES IMPAYÉS DES MOIS PRÉCÉDENTS
+        # OPTION : INCLURE LES IMPAYÉS n-2 (depuis Notion)
         # ===========================
         include_unpaid = st.checkbox(
-            "📌 Inclure les cours impayés des mois précédents",
+            "📌 ⚠️ Inclure les cours impayés des mois précédents",
             value=False,
             key="include_unpaid_previous_months",
-            help="Si coché, les factures incluront une section 'Rappel' avec le détail des cours non encore réglés des mois précédents. Le montant total (et le lien Stripe) couvriront l'ensemble."
+            help="Si coché, l'app lit dans Notion les lignes impayées du mois n-2 et les ajoute comme section 'Rappel' dans la facture PDF. Le montant total (et le lien Stripe) couvriront l'ensemble."
         )
         
         previous_unpaid_data = None
@@ -1521,10 +1522,10 @@ def page_invoices(ctx):
         
         if include_unpaid:
             st.markdown("---")
-            st.markdown("##### 📋 Chargement des impayés")
-            st.caption("Sélectionnez le(s) mois impayé(s) à inclure. Les données TutorBird de ces mois seront rechargées depuis Google Drive.")
+            st.markdown("##### 📋 Détection des impayés n-2 (Notion)")
+            st.caption("Sélectionnez le mois n-2 à vérifier. L'app interroge directement Notion « Paiements – Base Centrale » pour les lignes impayées de ce mois.")
             
-            # Proposer les mois disponibles (archives mensuelles)
+            # Proposer les mois disponibles (n-2 par défaut = 2 mois en arrière)
             available_months = []
             try:
                 today_dt = datetime.today()
@@ -1534,74 +1535,117 @@ def page_invoices(ctx):
                     while m <= 0:
                         m += 12
                         y -= 1
-                    month_key = f"{y:04d}-{m:02d}"
                     MONTHS_FR_LOCAL = ctx["MONTHS_FR"]
                     label = f"{MONTHS_FR_LOCAL[m - 1]} {y}"
-                    available_months.append((label, month_key))
+                    available_months.append((label, y, m))
             except Exception:
                 pass
             
             if available_months:
                 month_labels = [m[0] for m in available_months]
-                selected_unpaid_months = st.multiselect(
-                    "Mois à inclure comme rappel",
+                # Par défaut n-2 (index 1 = 2 mois en arrière)
+                default_idx = min(1, len(month_labels) - 1)
+                selected_unpaid_month = st.selectbox(
+                    "Mois à vérifier (impayés n-2)",
                     month_labels,
-                    default=[month_labels[0]] if month_labels else [],
-                    key="select_unpaid_months",
+                    index=default_idx,
+                    key="select_unpaid_month_n2",
                 )
                 
-                if selected_unpaid_months:
-                    previous_month_label = " + ".join(selected_unpaid_months)
+                if selected_unpaid_month:
+                    # Trouver le year/month correspondant
+                    sel_year, sel_month = None, None
+                    for label, y, m in available_months:
+                        if label == selected_unpaid_month:
+                            sel_year, sel_month = y, m
+                            break
                     
-                    if st.button("🔍 Charger les données des mois sélectionnés", key="load_unpaid_data"):
-                        previous_unpaid_data = {}
-                        with st.spinner("Chargement des archives mensuelles..."):
-                            for label, month_key in available_months:
-                                if label not in selected_unpaid_months:
-                                    continue
-                                archive_name = f"full_output_tb_{month_key}.json"
-                                try:
-                                    month_data = storage_load_json(archive_name, folder="data")
-                                    if month_data:
-                                        # Fusionner les données : si une famille existe dans plusieurs mois,
-                                        # on ajoute les leçons
-                                        for fam_id, fam_data in month_data.items():
-                                            if fam_id in previous_unpaid_data:
-                                                previous_unpaid_data[fam_id]["lessons"].extend(fam_data.get("lessons", []))
-                                                previous_unpaid_data[fam_id]["total_courses"] += fam_data.get("total_courses", 0)
-                                            else:
-                                                previous_unpaid_data[fam_id] = dict(fam_data)
-                                        st.success(f"✅ {label} : {len(month_data)} famille(s) chargée(s)")
-                                    else:
-                                        st.warning(f"⚠️ {label} : archive `{archive_name}` non trouvée sur Drive")
-                                except Exception as e:
-                                    st.warning(f"⚠️ {label} : erreur chargement — {e}")
+                    if st.button("🔍 Détecter les impayés depuis Notion", key="load_unpaid_notion_n2"):
+                        with st.spinner(f"Interrogation de Notion pour {selected_unpaid_month}..."):
+                            n2_result = fetch_unpaid_n2(secrets, sel_year, sel_month)
                         
-                        if previous_unpaid_data:
-                            # Filtrer pour ne garder que les familles avec impayés (via Notion)
-                            st.info("🔄 Croisement avec les impayés Notion...")
-                            try:
-                                from scripts.send_payment_reminders import get_unpaid_families_from_notion, normalize as _norm_reminder
-                                unpaid_result = get_unpaid_families_from_notion(secrets)
-                                if unpaid_result["success"]:
-                                    unpaid_names = {_norm_reminder(f["parent_name"]) for f in unpaid_result["unpaid"]}
-                                    # Ne garder que les familles réellement impayées
-                                    filtered = {}
-                                    for fam_id, fam_data in previous_unpaid_data.items():
-                                        parent = fam_data.get("parent_name") or fam_data.get("family_name") or ""
-                                        if _norm_reminder(parent) in unpaid_names:
-                                            filtered[fam_id] = fam_data
-                                    previous_unpaid_data = filtered
-                                    st.success(f"✅ {len(previous_unpaid_data)} famille(s) avec impayés confirmés")
-                                else:
-                                    st.warning("⚠️ Impossible de vérifier les impayés Notion — toutes les familles archivées seront incluses")
-                            except Exception as e:
-                                st.warning(f"⚠️ Erreur vérification Notion : {e}")
+                        if n2_result["success"] and n2_result["families"]:
+                            previous_month_label = n2_result["month_label"]
+                            
+                            # Convertir en format compatible avec generate_invoices (previous_unpaid_data)
+                            # Le format attendu est {family_id: {"lessons": [...], "parent_name": ..., ...}}
+                            # On utilise le nom normalisé comme family_id temporaire
+                            from scripts.send_payment_reminders import normalize as _norm_n2
+                            previous_unpaid_data = {}
+                            
+                            for norm_key, fam_info in n2_result["families"].items():
+                                # Chercher le vrai family_id dans data
+                                matched_fam_id = None
+                                for fid, fam in data.items():
+                                    parent = fam.get("parent_name") or fam.get("family_name") or ""
+                                    if _norm_n2(parent) == norm_key:
+                                        matched_fam_id = fid
+                                        break
+                                
+                                if not matched_fam_id:
+                                    # Utiliser un ID synthétique
+                                    matched_fam_id = f"notion_unpaid_{norm_key.replace(' ', '_')}"
+                                
+                                # Construire les leçons depuis les lignes Notion
+                                lessons = []
+                                for row in fam_info["rows"]:
+                                    # Reconstituer une leçon compatible
+                                    heures_str = row.get("heures", "0")
+                                    try:
+                                        heures_val = float(heures_str.replace("h", "").replace(",", ".").strip())
+                                    except (ValueError, AttributeError):
+                                        heures_val = 0
+                                    
+                                    # Convert Notion date YYYY-MM-DD to DD.MM.YYYY
+                                    raw_date = row.get("date_cours_start", "")
+                                    converted_date = ""
+                                    if raw_date and len(raw_date) == 10 and "-" in raw_date:
+                                        try:
+                                            parts = raw_date.split("-")
+                                            converted_date = f"{parts[2]}.{parts[1]}.{parts[0]}"
+                                        except (IndexError, ValueError):
+                                            converted_date = ""
+                                    
+                                    lessons.append({
+                                        "date": converted_date,
+                                        "time": "00:00",
+                                        "student": row.get("eleve", ""),
+                                        "teacher": row.get("prof", ""),
+                                        "duration_min": int(heures_val * 60) if heures_val else 0,
+                                        "amount": row.get("montant", 0),
+                                        "attendance_status": "Present",
+                                    })
+                                
+                                previous_unpaid_data[matched_fam_id] = {
+                                    "family_id": matched_fam_id,
+                                    "parent_name": fam_info["parent_name"],
+                                    "lessons": lessons,
+                                    "total_courses": fam_info["total_amount"],
+                                    "currency": fam_info.get("currency", "CHF").lower(),
+                                }
                             
                             st.session_state["_previous_unpaid_data"] = previous_unpaid_data
                             st.session_state["_previous_month_label"] = previous_month_label
+                            # Stocker aussi les familles n2 brutes pour la désactivation Stripe
+                            st.session_state["_unpaid_n2_families"] = n2_result["families"]
+                            
+                            st.success(f"✅ **{len(previous_unpaid_data)}** famille(s) avec impayés détectés pour {previous_month_label}")
+                            
+                            # Afficher le détail
+                            with st.expander(f"📋 Détail des impayés — {previous_month_label}", expanded=False):
+                                for fam_id, fam_data in previous_unpaid_data.items():
+                                    total = fam_data.get("total_courses", 0)
+                                    st.write(f"**{fam_data['parent_name']}** — {total:.2f} {fam_data.get('currency', 'CHF').upper()}")
+                                    for L in fam_data["lessons"]:
+                                        st.caption(f"  • {L.get('teacher', '')} / {L.get('student', '')} — {L.get('amount', 0):.2f}")
+                        
+                        elif n2_result["success"] and not n2_result["families"]:
+                            st.success(f"✅ Aucun impayé trouvé pour {n2_result.get('month_label', selected_unpaid_month)} — toutes les familles ont payé !")
+                            st.session_state.pop("_previous_unpaid_data", None)
+                            st.session_state.pop("_previous_month_label", None)
+                            st.session_state.pop("_unpaid_n2_families", None)
                         else:
-                            st.warning("⚠️ Aucune donnée trouvée pour les mois sélectionnés. Vérifiez que les extractions ont été archivées.")
+                            st.error(f"❌ Erreur Notion : {n2_result.get('error', 'Erreur inconnue')}")
             else:
                 st.warning("⚠️ Impossible de déterminer les mois disponibles.")
         
@@ -1610,7 +1654,7 @@ def page_invoices(ctx):
             previous_unpaid_data = st.session_state.get("_previous_unpaid_data")
             previous_month_label = st.session_state.get("_previous_month_label")
             if previous_unpaid_data:
-                st.info(f"📦 Données impayées chargées : **{len(previous_unpaid_data)}** famille(s) — {previous_month_label}")
+                st.info(f"📦 Impayés Notion chargés : **{len(previous_unpaid_data)}** famille(s) — {previous_month_label}")
 
         st.markdown("---")
 
@@ -1876,7 +1920,7 @@ Professor+
 """
     }
     
-    tab_fr, tab_en, tab_carole = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier"])
+    tab_fr, tab_en, tab_carole, tab_multimonth = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier", "📌 Multi-mois (impayés)"])
     with tab_fr:
         subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="invoice_mail_subject_fr")
         body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="invoice_mail_body_fr")
@@ -1888,6 +1932,12 @@ Professor+
             st.caption(f"📋 Détails heures Notion : **{carole_details}**")
         subject_carole = st.text_input("📝 Sujet", value=carole_template["subject"], key="invoice_mail_subject_carole")
         body_carole = st.text_area("✉️ Message", value=carole_template["body"], height=250, key="invoice_mail_body_carole")
+    with tab_multimonth:
+        unpaid_month_label = st.session_state.get("_previous_month_label", "mois précédent")
+        multimonth_template = get_default_multimonth_template(month_name, year, unpaid_month_label)
+        st.caption(f"📌 Ce template est utilisé automatiquement pour les familles ayant des impayés de mois précédents inclus dans leur facture.")
+        subject_multi = st.text_input("📝 Sujet", value=multimonth_template["subject"], key="invoice_mail_subject_multi")
+        body_multi = st.text_area("✉️ Message", value=multimonth_template["body"], height=250, key="invoice_mail_body_multi")
 
     st.markdown("---")
     st.markdown("### 📬 Options d'envoi")
@@ -1916,6 +1966,14 @@ Professor+
     final_invoice_names = [name for name in selected_invoice_names if name not in excluded_invoice_names]
     selected_families = [f["family_id"] for f in families if f["parent_name"] in final_invoice_names]
 
+    # Identifier les familles multi-mois (impayés n-2 consolidés)
+    _multimonth_ids = set()
+    _prev_unpaid = st.session_state.get("_previous_unpaid_data")
+    if _prev_unpaid:
+        _multimonth_ids = set(_prev_unpaid.keys())
+        if _multimonth_ids:
+            st.caption(f"📌 {len(_multimonth_ids)} famille(s) recevront le template multi-mois (impayés consolidés)")
+
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch"):
             if not final_invoice_names:
@@ -1933,6 +1991,8 @@ Professor+
                     custom_subject=subject, custom_body=body,
                     custom_subject_en=subject_en, custom_body_en=body_en,
                     custom_subject_carole=subject_carole, custom_body_carole=body_carole,
+                    custom_subject_multi=subject_multi, custom_body_multi=body_multi,
+                    multimonth_family_ids=_multimonth_ids if _multimonth_ids else None,
                     selected_families=selected_families,
                     send_to_test=True, callback=callback
                 )
@@ -1974,6 +2034,8 @@ Professor+
                 custom_subject=subject, custom_body=body,
                 custom_subject_en=subject_en, custom_body_en=body_en,
                 custom_subject_carole=subject_carole, custom_body_carole=body_carole,
+                custom_subject_multi=subject_multi, custom_body_multi=body_multi,
+                multimonth_family_ids=_multimonth_ids if _multimonth_ids else None,
                 selected_families=selected_families,
                 send_to_test=False, callback=callback
             )
@@ -1981,6 +2043,39 @@ Professor+
                 st.success(f"✅ **{result['sent']}/{result['total']}** emails envoyés")
                 # Mettre à jour System-Metadata (envoi réel uniquement)
                 _update_metadata(secrets, "last_invoice_sent_date", date_value=datetime.today().strftime("%Y-%m-%d"))
+                
+                # ===========================
+                # DÉSACTIVATION DES ANCIENS LIENS STRIPE (impayés n-2)
+                # ===========================
+                unpaid_n2_fams = st.session_state.get("_unpaid_n2_families")
+                if unpaid_n2_fams:
+                    st.info("🔒 Désactivation des anciens liens Stripe pour les familles avec impayés consolidés...")
+                    try:
+                        # Charger payment_links_output.json pour lookup des plink IDs
+                        plinks_list = None
+                        try:
+                            plinks_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
+                            if os.path.exists(plinks_path):
+                                with open(plinks_path, "r", encoding="utf-8") as f:
+                                    plinks_list = json.load(f)
+                        except Exception:
+                            pass
+                        
+                        deact_result = deactivate_old_payment_links(
+                            secrets, unpaid_n2_fams,
+                            payment_links_output=plinks_list,
+                        )
+                        if deact_result.get("deactivated", 0) > 0:
+                            st.success(f"🔒 **{deact_result['deactivated']}** ancien(s) lien(s) Stripe désactivé(s)")
+                        if deact_result.get("skipped", 0) > 0:
+                            st.caption(f"⏭️ {deact_result['skipped']} lien(s) ignoré(s) (déjà inactifs ou non trouvés)")
+                        if deact_result.get("errors"):
+                            with st.expander(f"⚠️ {len(deact_result['errors'])} erreur(s) de désactivation"):
+                                for err in deact_result["errors"]:
+                                    st.write(f"• {err}")
+                    except Exception as e:
+                        st.warning(f"⚠️ Erreur lors de la désactivation des anciens liens : {e}")
+                
                 st.caption(
                     f"PDFs détectés : {result.get('found_pdfs', 0)} | "
                     f"Familles prêtes : {result.get('matched_families', result.get('total', 0))}"
