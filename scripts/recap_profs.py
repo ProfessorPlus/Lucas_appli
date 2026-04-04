@@ -175,16 +175,18 @@ def compute_teacher_recap(
     # Euro parents
     euro_parents = {norm(p) for p in familles_euros}
 
-    # Tarifs spéciaux lookup
+    # Tarifs spéciaux lookup — stocke (pay_rate, currency)
     special_rates = {}
     for ts in tarifs_speciaux:
         t = norm(ts.get("teacher", ""))
+        rate_currency = ts.get("currency", "EUR").upper()
         if ts.get("parent"):
-            special_rates[(t, "parent", norm(ts["parent"]))] = ts["pay_rate"]
+            special_rates[(t, "parent", norm(ts["parent"]))] = (ts["pay_rate"], rate_currency)
         if ts.get("student"):
-            special_rates[(t, "student", norm(ts["student"]))] = ts["pay_rate"]
+            special_rates[(t, "student", norm(ts["student"]))] = (ts["pay_rate"], rate_currency)
 
     def get_special_rate(teacher_name, parent_name, student_name):
+        """Retourne (rate, currency) ou (None, None)."""
         tn = norm(teacher_name)
         r = special_rates.get((tn, "parent", norm(parent_name)))
         if r is not None:
@@ -193,7 +195,7 @@ def compute_teacher_recap(
             r = special_rates.get((tn, "student", norm(student_name)))
             if r is not None:
                 return r
-        return None
+        return (None, None)
 
     # FX: resolved lazily via fetch_chf_eur_rate()
     fx_info = None
@@ -284,6 +286,7 @@ def compute_teacher_recap(
                     amount_chf = notion_rate * hours
                     ensure_fx()
                     amount_eur = amount_chf * CHF_TO_EUR
+                    amount_eur = smart_round(amount_eur)
                     teacher_totals[t_name]["chf_as_eur"] += amount_eur
                     currency_label = "CHF→EUR (Notion)"
                 
@@ -310,13 +313,23 @@ def compute_teacher_recap(
             t_cfg = teachers_cfg[cfg_key]
             pay = t_cfg.get("pay_rate", {})
 
-            special = get_special_rate(t_name, parent, lesson.get("student"))
+            special, special_currency = get_special_rate(t_name, parent, lesson.get("student"))
 
             if special is not None:
                 rate = special
-                amount_eur = rate * hours
-                teacher_totals[cfg_key]["eur"] += amount_eur
-                currency_label = "EUR★"
+                if special_currency == "CHF":
+                    # Tarif spécial en CHF → conversion CHF→EUR
+                    amount_chf = rate * hours
+                    ensure_fx()
+                    amount_eur = amount_chf * CHF_TO_EUR
+                    amount_eur = smart_round(amount_eur)
+                    teacher_totals[cfg_key]["chf_as_eur"] += amount_eur
+                    currency_label = "CHF→EUR★"
+                else:
+                    # Tarif spécial en EUR (défaut)
+                    amount_eur = rate * hours
+                    teacher_totals[cfg_key]["eur"] += amount_eur
+                    currency_label = "EUR★"
             elif is_eur:
                 rate = pay.get("eur", 0)
                 amount_eur = rate * hours

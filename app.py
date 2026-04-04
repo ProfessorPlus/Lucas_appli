@@ -169,6 +169,12 @@ def save_familles_euros(familles):
     path = os.path.join(CONFIG_DIR, "familles_euros.yaml")
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump({"euros": familles}, f, allow_unicode=True)
+    # Sauvegarder sur Google Drive pour persister après reboot
+    try:
+        from scripts.storage_manager import save_file
+        save_file(path, drive_folder="config", drive_filename="familles_euros.yaml")
+    except Exception as e:
+        print(f"⚠️ Erreur sauvegarde familles_euros sur Drive: {e}")
 
 def load_tarifs_speciaux():
     paths = [
@@ -186,6 +192,12 @@ def save_tarifs_speciaux(tarifs):
     path = os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump({"tarifs_speciaux": tarifs}, f, allow_unicode=True)
+    # Sauvegarder sur Google Drive pour persister après reboot
+    try:
+        from scripts.storage_manager import save_file
+        save_file(path, drive_folder="config", drive_filename="tarifs_speciaux.yaml")
+    except Exception as e:
+        print(f"⚠️ Erreur sauvegarde tarifs_speciaux sur Drive: {e}")
 
 def load_extracted_data():
     path = os.path.join(DATA_DIR, "full_output_tb_SIMPLE.json")
