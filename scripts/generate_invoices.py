@@ -599,7 +599,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             currency = "EUR" if fam_id in families_in_euros else "CHF"
             # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
             fam_currency = (fam.get("currency") or "").upper()
-            if fam_currency in ("EUR", "CHF"):
+            if fam_currency in ("EUR", "CHF", "AED"):
                 currency = fam_currency
             
             # Filtrer les absences

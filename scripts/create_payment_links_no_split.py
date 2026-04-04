@@ -209,7 +209,7 @@ def run_create_payment_links_no_split(
             currency = "eur" if is_eur_family(parent_name) else "chf"
             # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
             fam_currency = (fam.get("currency") or "").lower()
-            if fam_currency in ("eur", "chf"):
+            if fam_currency in ("eur", "chf", "aed"):
                 currency = fam_currency
             lessons = fam.get("lessons", [])
             if not lessons:
@@ -299,6 +299,8 @@ def run_create_payment_links_no_split(
             pm_types = list(payment_method_types) if payment_method_types else None
             if currency != "chf" and pm_types:
                 pm_types = [pm for pm in pm_types if pm != "twint"]
+            if currency not in ("eur", "chf") and pm_types:
+                pm_types = [pm for pm in pm_types if pm not in ("klarna", "twint")]
             if pm_types:
                 filtered = [pm for pm in pm_types if pm in ALLOWED_PM]
                 params["payment_method_types"] = filtered if filtered else ["card"]

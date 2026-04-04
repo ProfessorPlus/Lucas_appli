@@ -160,6 +160,7 @@ def page_accueil(ctx):
     
     total_chf = 0
     total_eur = 0
+    total_aed = 0
     if data:
         for fam in data.values():
             parent = fam.get("parent_name") or fam.get("family_name") or ""
@@ -170,23 +171,47 @@ def page_accueil(ctx):
                 currency = "EUR" if normalize_name(parent) in euro_parents else "CHF"
             if currency == "EUR":
                 total_eur += amount
+            elif currency == "AED":
+                total_aed += amount
             else:
                 total_chf += amount
     
-    if total_eur > 0 and total_chf > 0:
+    has_multiple = sum(1 for t in (total_eur, total_chf, total_aed) if t > 0) > 1
+    if has_multiple:
         # Calculer le total EUR équivalent
         try:
-            from scripts.recap_profs import fetch_chf_eur_rate
+            from scripts.recap_profs import fetch_chf_eur_rate, fetch_fx_rate
             chf_eur_rate, _ = fetch_chf_eur_rate()
-            total_eur_equiv = total_eur + (total_chf * chf_eur_rate)
-            amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+            aed_eur_rate = 0
+            if total_aed > 0:
+                aed_eur_rate, _ = fetch_fx_rate("AED", "EUR")
+            total_eur_equiv = total_eur + (total_chf * chf_eur_rate) + (total_aed * aed_eur_rate)
+            parts = []
+            if total_chf > 0:
+                parts.append(f"{total_chf:,.0f} CHF")
+            if total_eur > 0:
+                parts.append(f"{total_eur:,.0f} €")
+            if total_aed > 0:
+                parts.append(f"{total_aed:,.0f} AED")
+            amount_display = " + ".join(parts)
             amount_sub = f"≈ {total_eur_equiv:,.0f} € total"
         except Exception:
-            amount_display = f"{total_chf:,.0f} CHF + {total_eur:,.0f} €"
+            parts = []
+            if total_chf > 0:
+                parts.append(f"{total_chf:,.0f} CHF")
+            if total_eur > 0:
+                parts.append(f"{total_eur:,.0f} €")
+            if total_aed > 0:
+                parts.append(f"{total_aed:,.0f} AED")
+            amount_display = " + ".join(parts)
             amount_sub = ""
         amount_size = "font-size: 1.1rem;"
     elif total_eur > 0:
         amount_display = f"{total_eur:,.0f} €"
+        amount_sub = ""
+        amount_size = ""
+    elif total_aed > 0:
+        amount_display = f"{total_aed:,.0f} AED"
         amount_sub = ""
         amount_size = ""
     else:

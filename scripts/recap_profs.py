@@ -24,7 +24,7 @@ import requests
 PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}
 
 # ===========================
-# FX CHF → EUR
+# FX CHF → EUR + générique (AED, etc.)
 # ===========================
 # Priority: Frankfurter API → ECB SDMX → hardcoded fallback
 
@@ -33,6 +33,73 @@ ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E
 
 # Hardcoded fallback (updated manually when needed)
 FALLBACK_CHF_EUR = 0.94  # ~approximate 2026 rate
+FALLBACK_AED_EUR = 0.25  # ~approximate 2026 rate (1 AED ≈ 0.25 EUR)
+
+
+@lru_cache(maxsize=64)
+def fetch_fx_rate(base_currency, target_currency="EUR", target_year=None, target_month=None):
+    """
+    Fetches the average FX rate for any currency pair over a given month.
+    Uses Frankfurter API (ECB data).
+    
+    Args:
+        base_currency: ex "AED", "CHF"
+        target_currency: ex "EUR"
+        target_year, target_month: mois cible
+    
+    Returns (rate, source_label).
+    """
+    import calendar
+    
+    if base_currency.upper() == target_currency.upper():
+        return 1.0, "Same currency"
+    
+    if target_year and target_month:
+        prev_y, prev_m = target_year, target_month
+    else:
+        today = date.today()
+        if today.month == 1:
+            prev_y, prev_m = today.year - 1, 12
+        else:
+            prev_y, prev_m = today.year, today.month - 1
+    
+    last_day = calendar.monthrange(prev_y, prev_m)[1]
+    start_date = f"{prev_y:04d}-{prev_m:02d}-01"
+    end_date = f"{prev_y:04d}-{prev_m:02d}-{last_day:02d}"
+    month_label = f"{prev_y:04d}-{prev_m:02d}"
+    
+    try:
+        r = requests.get(
+            f"{FRANKFURTER_URL}/{start_date}..{end_date}",
+            params={"base": base_currency.upper(), "symbols": target_currency.upper()},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        rates = data.get("rates", {})
+        
+        if rates:
+            values = [day_rates[target_currency.upper()] for day_rates in rates.values() if target_currency.upper() in day_rates]
+            if values:
+                avg = round(sum(values) / len(values), 6)
+                print(f"✅ Taux {base_currency}→{target_currency} moyenne {month_label} via Frankfurter: {avg} ({len(values)} jours)")
+                return avg, f"Moyenne {month_label} ({len(values)}j, Frankfurter)"
+    except Exception as e:
+        print(f"⚠️ Frankfurter {base_currency}→{target_currency} indisponible: {e}")
+    
+    # Fallback hardcodé pour les paires connues
+    fallback_key = f"{base_currency.upper()}_{target_currency.upper()}"
+    fallbacks = {
+        "AED_EUR": FALLBACK_AED_EUR,
+        "CHF_EUR": FALLBACK_CHF_EUR,
+    }
+    if fallback_key in fallbacks:
+        rate = fallbacks[fallback_key]
+        print(f"⚠️ Taux de secours {base_currency}→{target_currency}: {rate}")
+        return rate, "Taux de secours (approximatif)"
+    
+    print(f"⚠️ Aucun taux disponible pour {base_currency}→{target_currency}")
+    return 0.0, "Aucun taux disponible"
 
 
 @lru_cache(maxsize=36)
