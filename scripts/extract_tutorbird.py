@@ -6,6 +6,8 @@ VERSION CLOUD - Compatible Streamlit Cloud avec Google Drive
 
 import os
 import json
+import re
+import unicodedata
 import requests
 from datetime import datetime
 
@@ -15,6 +17,19 @@ try:
     STORAGE_AVAILABLE = True
 except ImportError:
     STORAGE_AVAILABLE = False
+
+
+def _normalize_name(name):
+    """Normalise un nom pour matching : minuscules, sans accents, mots triés."""
+    if not isinstance(name, str):
+        return ""
+    s = name.lower().strip()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = s.replace("-", " ").replace(",", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    # Trier les mots pour que "Fatou Thiam" == "Thiam Fatou"
+    return " ".join(sorted(s.split()))
 
 
 def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir, callback=None, notion_families=None):
@@ -219,17 +234,61 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
         # MERGE PROFS HORS TUTORBIRD (depuis Notion)
         # ===============================
         notion_count = 0
+        notion_merged_into_tb = 0
         if notion_families:
             update(85, "📋 Ajout des profs hors TutorBird...")
+            
+            # Construire un index de noms normalisés → fam_id TutorBird
+            tb_name_index = {}
+            for tb_fam_id, tb_fam in families.items():
+                parent = tb_fam.get("parent_name") or tb_fam.get("family_name") or ""
+                norm_key = _normalize_name(parent)
+                if norm_key:
+                    tb_name_index[norm_key] = tb_fam_id
+            
             for fam_id, fam_data in notion_families.items():
-                if fam_id not in families:
-                    families[fam_id] = fam_data
-                    notion_count += 1
-                else:
-                    # Famille déjà existante (rare) — ajouter les leçons
+                notion_parent = fam_data.get("parent_name") or fam_data.get("family_name") or ""
+                notion_norm = _normalize_name(notion_parent)
+                
+                # 1. Match exact par fam_id
+                if fam_id in families:
                     families[fam_id]["lessons"].extend(fam_data.get("lessons", []))
                     families[fam_id]["total_courses"] += fam_data.get("total_courses", 0)
+                    # Appliquer la devise Notion si définie
+                    notion_currency = fam_data.get("currency", "")
+                    if notion_currency:
+                        families[fam_id]["currency"] = notion_currency
                     notion_count += 1
+                    notion_merged_into_tb += 1
+                    print(f"  🔗 Notion fusionné (id exact) : {notion_parent} → {fam_id}")
+                    continue
+                
+                # 2. Match par nom normalisé (ex: "Fatou Thiam" ↔ "Thiam Fatou")
+                matched_tb_id = tb_name_index.get(notion_norm)
+                if matched_tb_id:
+                    families[matched_tb_id]["lessons"].extend(fam_data.get("lessons", []))
+                    families[matched_tb_id]["total_courses"] += fam_data.get("total_courses", 0)
+                    # Appliquer la devise Notion (elle prime sur TutorBird)
+                    notion_currency = fam_data.get("currency", "")
+                    if notion_currency:
+                        families[matched_tb_id]["currency"] = notion_currency
+                    # Appliquer la langue Notion si définie
+                    notion_lang = fam_data.get("language")
+                    if notion_lang:
+                        families[matched_tb_id]["language"] = notion_lang
+                    notion_count += 1
+                    notion_merged_into_tb += 1
+                    tb_parent = families[matched_tb_id].get("parent_name", "")
+                    print(f"  🔗 Notion fusionné (nom) : {notion_parent} → {tb_parent} ({matched_tb_id})")
+                    continue
+                
+                # 3. Pas de match → nouvelle famille (100% Notion)
+                families[fam_id] = fam_data
+                notion_count += 1
+                print(f"  ➕ Notion nouvelle famille : {notion_parent} ({fam_id})")
+            
+            if notion_merged_into_tb > 0:
+                print(f"📋 {notion_merged_into_tb} famille(s) Notion fusionnée(s) avec TutorBird")
         
         # ===============================
         # SAUVEGARDE (locale + Google Drive si cloud)
