@@ -1912,6 +1912,31 @@ def page_send(ctx):
         with st.expander(f"⚠️ {len(diagnostics['missing_pdf_families'])} famille(s) avec email mais sans PDF retrouvé"):
             for item in diagnostics["missing_pdf_families"]:
                 st.write(f"• **{item['parent_name']}** — {item.get('parent_email','')}")
+        
+        # Bouton resync Drive pour récupérer les PDFs manquants
+        source = str(selected_folder.get("source", "")).lower()
+        if source in ("drive", "both"):
+            if st.button("🔄 Resynchroniser les PDFs depuis Google Drive", key="resync_drive_pdfs"):
+                with st.spinner("📥 Téléchargement des factures depuis Google Drive..."):
+                    try:
+                        resync_result = load_invoice_folder(
+                            selected_folder.get("year"),
+                            selected_folder.get("month"),
+                        )
+                        if resync_result.get("success"):
+                            dl_count = resync_result.get("downloaded", 0)
+                            dl_errors = resync_result.get("errors", [])
+                            folder_path = resync_result.get("local_path", folder_path)
+                            st.success(f"✅ {dl_count} fichier(s) téléchargé(s) depuis Drive")
+                            if dl_errors:
+                                with st.expander(f"⚠️ {len(dl_errors)} erreur(s) de téléchargement"):
+                                    for err in dl_errors:
+                                        st.write(f"• {err}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Erreur resync : {resync_result.get('error', 'Erreur inconnue')}")
+                    except Exception as e:
+                        st.error(f"❌ Erreur : {e}")
 
     # Récupérer les détails heures Notion pour le mail personnalisé Carole
     carole_details = ""
