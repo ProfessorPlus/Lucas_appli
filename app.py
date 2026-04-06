@@ -434,7 +434,7 @@ with st.sidebar:
     if _sync_log:
         with st.expander("🔧 Drive sync", expanded=False):
             for _msg in _sync_log:
-                st.caption(_msg)
+                st.markdown(f'<span style="color: white; font-size: 0.8rem;">{_msg}</span>', unsafe_allow_html=True)
     
     st.markdown(f"""
     <div class="sidebar-info-fixed">

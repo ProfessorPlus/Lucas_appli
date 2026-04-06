@@ -87,6 +87,28 @@ def fetch_fx_rate(base_currency, target_currency="EUR", target_year=None, target
     except Exception as e:
         print(f"⚠️ Frankfurter {base_currency}→{target_currency} indisponible: {e}")
     
+    # AED spécial : peg fixe USD (1 USD = 3.6725 AED), calcul via USD→EUR
+    if base_currency.upper() == "AED" and target_currency.upper() == "EUR":
+        AED_USD_PEG = 3.6725  # Taux fixe officiel
+        try:
+            r = requests.get(
+                f"{FRANKFURTER_URL}/{start_date}..{end_date}",
+                params={"base": "USD", "symbols": "EUR"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            rates = data.get("rates", {})
+            if rates:
+                usd_eur_values = [day_rates["EUR"] for day_rates in rates.values() if "EUR" in day_rates]
+                if usd_eur_values:
+                    usd_eur_avg = sum(usd_eur_values) / len(usd_eur_values)
+                    aed_eur = round(usd_eur_avg / AED_USD_PEG, 6)
+                    print(f"✅ Taux AED→EUR via USD peg {month_label}: {aed_eur} ({len(usd_eur_values)} jours)")
+                    return aed_eur, f"Moyenne {month_label} (via USD peg, Frankfurter)"
+        except Exception as e2:
+            print(f"⚠️ Calcul AED→EUR via USD échoué: {e2}")
+    
     # Fallback hardcodé pour les paires connues
     fallback_key = f"{base_currency.upper()}_{target_currency.upper()}"
     fallbacks = {
