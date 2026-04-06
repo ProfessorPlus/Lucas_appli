@@ -37,6 +37,7 @@ def is_streamlit_cloud():
     return (
         os.environ.get("STREAMLIT_SHARING_MODE") == "true" or
         os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true" or
+        os.path.exists("/mount/src") or
         not os.path.exists("secrets.yaml") and not os.path.exists("config/secrets.yaml")
     )
 
