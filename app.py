@@ -8,7 +8,7 @@ import streamlit as st
 import os
 import json
 import yaml
-from scripts.config_loader import load_secrets, load_secrets_no_prof
+from scripts.config_loader import load_secrets, load_secrets_no_prof, save_yaml_to_drive
 from datetime import datetime, time, timedelta
 import calendar
 
@@ -146,10 +146,9 @@ def save_secrets(secrets):
     path = os.path.join(CONFIG_DIR, "secrets.yaml")
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(secrets, f, default_flow_style=False, allow_unicode=True)
-    # Aussi sauvegarder sur Google Drive pour persister après reboot
+    # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        from scripts.storage_manager import save_file
-        save_file(path, drive_folder="config", drive_filename="secrets.yaml")
+        save_yaml_to_drive("secrets.yaml", secrets)
     except Exception as e:
         print(f"⚠️ Erreur sauvegarde secrets sur Drive: {e}")
 
@@ -167,12 +166,12 @@ def load_familles_euros():
 
 def save_familles_euros(familles):
     path = os.path.join(CONFIG_DIR, "familles_euros.yaml")
+    data_dict = {"euros": familles}
     with open(path, "w", encoding="utf-8") as f:
-        yaml.dump({"euros": familles}, f, allow_unicode=True)
+        yaml.dump(data_dict, f, allow_unicode=True)
     # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        from scripts.storage_manager import save_file
-        save_file(path, drive_folder="config", drive_filename="familles_euros.yaml")
+        save_yaml_to_drive("familles_euros.yaml", data_dict)
     except Exception as e:
         print(f"⚠️ Erreur sauvegarde familles_euros sur Drive: {e}")
 
@@ -190,12 +189,12 @@ def load_tarifs_speciaux():
 
 def save_tarifs_speciaux(tarifs):
     path = os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")
+    data_dict = {"tarifs_speciaux": tarifs}
     with open(path, "w", encoding="utf-8") as f:
-        yaml.dump({"tarifs_speciaux": tarifs}, f, allow_unicode=True)
+        yaml.dump(data_dict, f, allow_unicode=True)
     # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        from scripts.storage_manager import save_file
-        save_file(path, drive_folder="config", drive_filename="tarifs_speciaux.yaml")
+        save_yaml_to_drive("tarifs_speciaux.yaml", data_dict)
     except Exception as e:
         print(f"⚠️ Erreur sauvegarde tarifs_speciaux sur Drive: {e}")
 
@@ -278,26 +277,41 @@ if "drive_config_synced" not in st.session_state:
     if _is_cloud:
         # 1. Initialiser le storage (connexion Drive + structure dossiers)
         try:
-            from scripts.storage_manager import init_storage, download_from_drive
+            from scripts.storage_manager import init_storage
             init_result = init_storage()
             if init_result.get("drive_connected"):
                 print("✅ Google Drive connecté au démarrage")
             else:
                 print(f"⚠️ Drive init: {init_result.get('message', 'non connecté')}")
-            
-            # 2. Restaurer les configs depuis Drive
-            config_files = [
-                ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
-                ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
-                ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
-            ]
-            for drive_name, local_path in config_files:
-                try:
-                    result = download_from_drive(drive_name, local_path, drive_folder="config")
-                    if result.get("success"):
-                        print(f"✅ Config restaurée depuis Drive : {drive_name}")
-                except Exception as e:
-                    print(f"⚠️ Config {drive_name} : {e}")
+        except Exception as e:
+            print(f"⚠️ Erreur init storage: {e}")
+        
+        # 2. Restaurer les configs depuis Drive via config_loader
+        #    (utilise _download_yaml_from_drive qui est prouvé fonctionnel)
+        try:
+            from scripts.config_loader import _get_drive_service, _download_yaml_from_drive, _get_root_folder_id
+            _drive_svc = _get_drive_service()
+            if _drive_svc:
+                _root_id = _get_root_folder_id()
+                config_files_to_restore = [
+                    ("secrets.yaml", os.path.join(CONFIG_DIR, "secrets.yaml")),
+                    ("familles_euros.yaml", os.path.join(CONFIG_DIR, "familles_euros.yaml")),
+                    ("tarifs_speciaux.yaml", os.path.join(CONFIG_DIR, "tarifs_speciaux.yaml")),
+                ]
+                for drive_name, local_path in config_files_to_restore:
+                    try:
+                        content = _download_yaml_from_drive(_drive_svc, _root_id, drive_name)
+                        if content:
+                            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                            with open(local_path, "w", encoding="utf-8") as f:
+                                f.write(content)
+                            print(f"✅ Config restaurée depuis Drive : {drive_name}")
+                        else:
+                            print(f"⚠️ Config {drive_name} non trouvée sur Drive")
+                    except Exception as e:
+                        print(f"⚠️ Config {drive_name} : {e}")
+            else:
+                print("⚠️ Impossible de se connecter à Google Drive au démarrage")
         except Exception as e:
             print(f"⚠️ Erreur sync Drive au démarrage: {e}")
 

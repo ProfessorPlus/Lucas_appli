@@ -148,6 +148,100 @@ def _download_secrets_from_drive(drive_service, folder_id):
     return _download_yaml_from_drive(drive_service, folder_id, "secrets.yaml")
 
 
+def _upload_yaml_to_drive(drive_service, folder_id, filename, yaml_content):
+    """
+    Upload un fichier YAML vers Google Drive dans le dossier config/.
+    Utilise le même chemin que _download_yaml_from_drive pour la cohérence.
+    
+    Args:
+        drive_service: service Google Drive
+        folder_id: ID du dossier racine (Professor_Plus_Data)
+        filename: nom du fichier (ex: "tarifs_speciaux.yaml")
+        yaml_content: contenu YAML en string
+    
+    Returns:
+        bool: True si succès
+    """
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+        
+        # Trouver ou créer le dossier config/
+        query = f"name='config' and mimeType='application/vnd.google-apps.folder' and '{folder_id}' in parents and trashed=false"
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
+        config_files = results.get('files', [])
+        
+        if config_files:
+            config_folder_id = config_files[0]['id']
+        else:
+            # Créer le dossier config/
+            folder_metadata = {
+                'name': 'config',
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [folder_id],
+            }
+            folder = drive_service.files().create(body=folder_metadata, fields='id').execute()
+            config_folder_id = folder['id']
+        
+        # Chercher si le fichier existe déjà
+        query = f"name='{filename}' and '{config_folder_id}' in parents and trashed=false"
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
+        existing = results.get('files', [])
+        
+        content_bytes = yaml_content.encode('utf-8')
+        media = MediaIoBaseUpload(io.BytesIO(content_bytes), mimetype='text/yaml', resumable=True)
+        
+        if existing:
+            drive_service.files().update(
+                fileId=existing[0]['id'],
+                media_body=media,
+            ).execute()
+        else:
+            file_metadata = {
+                'name': filename,
+                'parents': [config_folder_id],
+            }
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id',
+            ).execute()
+        
+        print(f"✅ {filename} uploadé vers Google Drive (config/)")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erreur upload {filename} vers Drive: {e}")
+        return False
+
+
+def save_yaml_to_drive(filename, data_dict):
+    """
+    Sauvegarde un dict en YAML sur Google Drive dans config/.
+    Fonction publique utilisable depuis app.py.
+    
+    Args:
+        filename: nom du fichier (ex: "tarifs_speciaux.yaml")
+        data_dict: dict à sauvegarder en YAML
+    
+    Returns:
+        bool: True si succès
+    """
+    if not YAML_AVAILABLE:
+        print("❌ Module yaml non installé")
+        return False
+    
+    if not is_streamlit_cloud():
+        return True  # En local, pas besoin d'upload Drive
+    
+    drive_service = _get_drive_service()
+    if not drive_service:
+        print("❌ Impossible de se connecter à Google Drive")
+        return False
+    
+    yaml_content = yaml.dump(data_dict, default_flow_style=False, allow_unicode=True)
+    return _upload_yaml_to_drive(drive_service, _get_root_folder_id(), filename, yaml_content)
+
+
 # ===========================
 # CHARGEMENT GÉNÉRIQUE YAML
 # ===========================
