@@ -260,16 +260,17 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     # BANDEAU HAUT
     if is_notion_custom:
-        # Carole / Notion custom : adresse OCTOPUS SARL au lieu de tagline + Facturer à
-        st_address = ParagraphStyle(name="addr", fontName=FONT_BOLD, fontSize=9, leading=12, textColor=BRAND_BLUE)
-        left_band = Paragraph(
+        # Carole / Notion custom : pas de tagline, adresse OCTOPUS dans "Facturer à"
+        left_band = Paragraph("", st_sub)  # Vide à gauche
+        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        middle_band = Paragraph(
+            "<b>Facturer à :</b><br/>"
             "OCTOPUS SARL<br/>"
             "C/o CATS BUSINESS CENTER<br/>"
             "28 bd Princesse Charlotte<br/>"
             "98 000 MONACO",
-            st_address,
+            st_addr_mid,
         )
-        middle_band = Paragraph(f"<b>{parent_name}</b>", st_facturer)
     else:
         tagline_text = TAGLINE_LEFT
         left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
@@ -295,7 +296,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     # TABLEAU
     if is_notion_custom:
-        # Custom: pas de colonne Date
+        # Custom Carole : pas de colonne Date, pas de détail cours, juste Package
         data_tbl = [
             [
                 Paragraph("Description", st_header),
@@ -303,15 +304,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
             ]
         ]
         
-        for item in items:
-            desc_cell = item["description"]
-            amt_cell = f'{item["amount"]:.2f} {currency}'
-            data_tbl.append([
-                Paragraph(desc_cell, ParagraphStyle(name="c", fontName=FONT_SANS, fontSize=10)),
-                Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_GREEN)),
-            ])
-        
-        # Ligne Package Formation Anglais (spécifique Carole / notion_custom)
+        # Ligne unique : 1 Package FORMATION Anglais / Professionnel
         st_package = ParagraphStyle(name="pkg", fontName=FONT_BOLD, fontSize=10)
         st_package_frais = ParagraphStyle(name="pkgf", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_BLUE)
         data_tbl.append([
@@ -414,7 +407,10 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         pass  # prev_separator_row_idx is a local variable
     if previous_items:
         # Find the separator row index — it's after current items + header
-        sep_idx = 1 + len(items)  # 1 for header row
+        if is_notion_custom:
+            sep_idx = 2  # header(0) + package(1) → separator at 2
+        else:
+            sep_idx = 1 + len(items)  # 1 for header row
         tbl_style_cmds.append(("BACKGROUND", (0, sep_idx), (-1, sep_idx), colors.Color(1.0, 0.95, 0.93)))
         tbl_style_cmds.append(("TOPPADDING", (0, sep_idx), (-1, sep_idx), 12))
         tbl_style_cmds.append(("BOTTOMPADDING", (0, sep_idx), (-1, sep_idx), 12))
@@ -429,7 +425,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         st_note = ParagraphStyle(name="note", fontName=FONT_SANS, fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
         flow.append(Spacer(1, 3 * mm))
         flow.append(Paragraph(
-            "Cette facture combine les cours du mois en cours et les cours des mois précédents non encore réglés.",
+            "Cette facture combine les cours des mois précédents non encore réglés.",
             st_note
         ))
         flow.append(Spacer(1, 12 * mm))
