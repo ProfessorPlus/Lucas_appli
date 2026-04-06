@@ -289,6 +289,7 @@ if "drive_config_synced" not in st.session_state:
     _is_cloud = (
         os.environ.get("STREAMLIT_SHARING_MODE") == "true"
         or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
+        or os.path.exists("/mount/src")
     )
     if _is_cloud:
         # 1. Initialiser le storage (connexion Drive + structure dossiers)
