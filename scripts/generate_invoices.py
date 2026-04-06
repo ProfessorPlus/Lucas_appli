@@ -224,8 +224,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        tagline = "Soutien" if is_notion_custom else "Soutien scolaire sur-mesure"
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
+        tagline = "" if is_notion_custom else "Soutien scolaire sur-mesure"
+        if tagline:
+            canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
 
         canvas.setFont(FONT_SANS, 10)
         txt = "Facture"
@@ -258,9 +259,21 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    tagline_text = "Soutien" if is_notion_custom else TAGLINE_LEFT
-    left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
-    middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
+    if is_notion_custom:
+        # Carole / Notion custom : adresse OCTOPUS SARL au lieu de tagline + Facturer à
+        st_address = ParagraphStyle(name="addr", fontName=FONT_BOLD, fontSize=9, leading=12, textColor=BRAND_BLUE)
+        left_band = Paragraph(
+            "OCTOPUS SARL<br/>"
+            "C/o CATS BUSINESS CENTER<br/>"
+            "28 bd Princesse Charlotte<br/>"
+            "98 000 MONACO",
+            st_address,
+        )
+        middle_band = Paragraph(f"<b>{parent_name}</b>", st_facturer)
+    else:
+        tagline_text = TAGLINE_LEFT
+        left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
+        middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
     left_w = 58 * mm
@@ -297,6 +310,14 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                 Paragraph(desc_cell, ParagraphStyle(name="c", fontName=FONT_SANS, fontSize=10)),
                 Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_GREEN)),
             ])
+        
+        # Ligne Package Formation Anglais (spécifique Carole / notion_custom)
+        st_package = ParagraphStyle(name="pkg", fontName=FONT_BOLD, fontSize=10)
+        st_package_frais = ParagraphStyle(name="pkgf", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_BLUE)
+        data_tbl.append([
+            Paragraph("1 Package FORMATION Anglais", st_package),
+            Paragraph("Professionnel", st_package_frais),
+        ])
         
         # Ajouter les cours impayés des mois précédents (notion custom)
         if previous_items:
