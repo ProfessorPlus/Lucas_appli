@@ -2992,7 +2992,104 @@ def page_update(ctx):
 def page_config(ctx):
     st.markdown('<div class="section-title">⚙️ Configuration</div>', unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4 = st.tabs(["👨‍🏫 Professeurs", "💶 Familles EUR", "🏷️ Tarifs spéciaux", "📧 Email"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["👨‍🏫 Professeurs", "💶 Familles EUR", "🏷️ Tarifs spéciaux", "📧 Email", "🔧 Drive"])
+    
+    # ===========================
+    # TAB 5: Diagnostic Drive
+    # ===========================
+    with tab5:
+        st.markdown("### 🔧 Diagnostic Google Drive")
+        st.caption("Vérifie que la sauvegarde et la restauration des configs fonctionnent.")
+        
+        # Afficher le log de sync au boot
+        _sync_log = st.session_state.get("drive_sync_log", [])
+        if _sync_log:
+            st.markdown("**Sync au démarrage :**")
+            for _msg in _sync_log:
+                st.write(_msg)
+        else:
+            st.info("Aucun log de sync disponible (premier chargement ou mode local)")
+        
+        st.markdown("---")
+        
+        # Test de connexion Drive
+        if st.button("🔍 Tester la connexion Drive", key="test_drive_conn"):
+            try:
+                from scripts.config_loader import _get_drive_service, _get_root_folder_id, _download_yaml_from_drive, is_streamlit_cloud
+                
+                st.write(f"☁️ `is_streamlit_cloud()` = **{is_streamlit_cloud()}**")
+                
+                svc = _get_drive_service()
+                if svc:
+                    st.success("✅ Connexion Drive OK")
+                    root_id = _get_root_folder_id()
+                    st.write(f"📁 ROOT_FOLDER_ID = `{root_id}`")
+                    
+                    # Lister le contenu du dossier config/
+                    query = f"name='config' and mimeType='application/vnd.google-apps.folder' and '{root_id}' in parents and trashed=false"
+                    results = svc.files().list(q=query, fields="files(id, name)").execute()
+                    config_folders = results.get('files', [])
+                    
+                    if config_folders:
+                        cfg_id = config_folders[0]['id']
+                        st.success(f"✅ Dossier config/ trouvé (ID: `{cfg_id}`)")
+                        
+                        # Lister les fichiers dans config/
+                        query = f"'{cfg_id}' in parents and trashed=false"
+                        results = svc.files().list(q=query, fields="files(id, name, modifiedTime, size)").execute()
+                        files = results.get('files', [])
+                        
+                        if files:
+                            st.write(f"📄 **{len(files)} fichier(s) dans config/ :**")
+                            for f in files:
+                                st.write(f"  • `{f['name']}` — modifié: {f.get('modifiedTime', '?')} — taille: {f.get('size', '?')}")
+                        else:
+                            st.warning("⚠️ Dossier config/ est vide")
+                    else:
+                        st.error("❌ Dossier config/ non trouvé dans Professor_Plus_Data")
+                    
+                    # Test lecture secrets.yaml
+                    st.markdown("---")
+                    st.write("**Test lecture secrets.yaml :**")
+                    content = _download_yaml_from_drive(svc, root_id, "secrets.yaml")
+                    if content:
+                        st.success(f"✅ secrets.yaml lu ({len(content)} caractères)")
+                    else:
+                        st.error("❌ secrets.yaml non lisible")
+                    
+                    # Test lecture tarifs_speciaux.yaml
+                    st.write("**Test lecture tarifs_speciaux.yaml :**")
+                    content = _download_yaml_from_drive(svc, root_id, "tarifs_speciaux.yaml")
+                    if content:
+                        st.success(f"✅ tarifs_speciaux.yaml lu ({len(content)} caractères)")
+                        st.code(content[:500], language="yaml")
+                    else:
+                        st.error("❌ tarifs_speciaux.yaml non lisible")
+                    
+                else:
+                    st.error("❌ Impossible de se connecter à Google Drive")
+                    st.write("Vérifiez que `google_service_account` est configuré dans les secrets Streamlit.")
+            except Exception as e:
+                st.error(f"❌ Erreur : {e}")
+                import traceback
+                st.code(traceback.format_exc())
+        
+        st.markdown("---")
+        
+        # Test d'écriture
+        if st.button("📝 Tester l'écriture sur Drive", key="test_drive_write"):
+            try:
+                from scripts.config_loader import save_yaml_to_drive
+                test_data = {"test": True, "timestamp": datetime.now().isoformat()}
+                result = save_yaml_to_drive("_test_write.yaml", test_data)
+                if result:
+                    st.success("✅ Écriture Drive OK — fichier `_test_write.yaml` créé dans config/")
+                else:
+                    st.error("❌ Échec écriture Drive")
+            except Exception as e:
+                st.error(f"❌ Erreur écriture : {e}")
+                import traceback
+                st.code(traceback.format_exc())
     
     # ===========================
     # TAB 1: Professeurs

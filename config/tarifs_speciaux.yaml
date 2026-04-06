@@ -14,7 +14,7 @@
 #           Mais avec Nikitina Anna, il reçoit 40 EUR/h
 
 tarifs_speciaux:
-  # Jabrane Karkouri avec Nikitina Anna = 40 EUR/h (au lieu de 25 EUR)
   - teacher: "Jabrane Karkouri"
     parent: "Nikitina Anna"
     pay_rate: 40
+    currency: "EUR"

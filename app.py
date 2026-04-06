@@ -148,8 +148,13 @@ def save_secrets(secrets):
         yaml.dump(secrets, f, default_flow_style=False, allow_unicode=True)
     # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        save_yaml_to_drive("secrets.yaml", secrets)
+        result = save_yaml_to_drive("secrets.yaml", secrets)
+        if result:
+            st.toast("✅ secrets.yaml sauvegardé sur Drive", icon="☁️")
+        else:
+            st.toast("⚠️ Échec upload secrets.yaml sur Drive", icon="❌")
     except Exception as e:
+        st.toast(f"❌ Erreur Drive: {e}", icon="❌")
         print(f"⚠️ Erreur sauvegarde secrets sur Drive: {e}")
 
 def load_familles_euros():
@@ -171,8 +176,13 @@ def save_familles_euros(familles):
         yaml.dump(data_dict, f, allow_unicode=True)
     # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        save_yaml_to_drive("familles_euros.yaml", data_dict)
+        result = save_yaml_to_drive("familles_euros.yaml", data_dict)
+        if result:
+            st.toast("✅ familles_euros sauvegardé sur Drive", icon="☁️")
+        else:
+            st.toast("⚠️ Échec upload familles_euros sur Drive", icon="❌")
     except Exception as e:
+        st.toast(f"❌ Erreur Drive: {e}", icon="❌")
         print(f"⚠️ Erreur sauvegarde familles_euros sur Drive: {e}")
 
 def load_tarifs_speciaux():
@@ -194,8 +204,13 @@ def save_tarifs_speciaux(tarifs):
         yaml.dump(data_dict, f, allow_unicode=True)
     # Sauvegarder sur Google Drive pour persister après reboot
     try:
-        save_yaml_to_drive("tarifs_speciaux.yaml", data_dict)
+        result = save_yaml_to_drive("tarifs_speciaux.yaml", data_dict)
+        if result:
+            st.toast("✅ tarifs_speciaux sauvegardé sur Drive", icon="☁️")
+        else:
+            st.toast("⚠️ Échec upload tarifs_speciaux sur Drive", icon="❌")
     except Exception as e:
+        st.toast(f"❌ Erreur Drive: {e}", icon="❌")
         print(f"⚠️ Erreur sauvegarde tarifs_speciaux sur Drive: {e}")
 
 def load_extracted_data():
@@ -270,6 +285,7 @@ def get_month_year_from_folder(folder):
 # On restaure les configs et les dossiers de factures depuis Google Drive.
 if "drive_config_synced" not in st.session_state:
     st.session_state.drive_config_synced = True
+    st.session_state.drive_sync_log = []
     _is_cloud = (
         os.environ.get("STREAMLIT_SHARING_MODE") == "true"
         or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
@@ -280,14 +296,13 @@ if "drive_config_synced" not in st.session_state:
             from scripts.storage_manager import init_storage
             init_result = init_storage()
             if init_result.get("drive_connected"):
-                print("✅ Google Drive connecté au démarrage")
+                st.session_state.drive_sync_log.append("✅ Drive connecté")
             else:
-                print(f"⚠️ Drive init: {init_result.get('message', 'non connecté')}")
+                st.session_state.drive_sync_log.append(f"⚠️ Drive: {init_result.get('message', 'non connecté')}")
         except Exception as e:
-            print(f"⚠️ Erreur init storage: {e}")
+            st.session_state.drive_sync_log.append(f"❌ Init storage: {e}")
         
         # 2. Restaurer les configs depuis Drive via config_loader
-        #    (utilise _download_yaml_from_drive qui est prouvé fonctionnel)
         try:
             from scripts.config_loader import _get_drive_service, _download_yaml_from_drive, _get_root_folder_id
             _drive_svc = _get_drive_service()
@@ -305,15 +320,17 @@ if "drive_config_synced" not in st.session_state:
                             os.makedirs(os.path.dirname(local_path), exist_ok=True)
                             with open(local_path, "w", encoding="utf-8") as f:
                                 f.write(content)
-                            print(f"✅ Config restaurée depuis Drive : {drive_name}")
+                            st.session_state.drive_sync_log.append(f"✅ {drive_name}")
                         else:
-                            print(f"⚠️ Config {drive_name} non trouvée sur Drive")
+                            st.session_state.drive_sync_log.append(f"⚠️ {drive_name} non trouvé")
                     except Exception as e:
-                        print(f"⚠️ Config {drive_name} : {e}")
+                        st.session_state.drive_sync_log.append(f"❌ {drive_name}: {e}")
             else:
-                print("⚠️ Impossible de se connecter à Google Drive au démarrage")
+                st.session_state.drive_sync_log.append("❌ Connexion Drive échouée")
         except Exception as e:
-            print(f"⚠️ Erreur sync Drive au démarrage: {e}")
+            st.session_state.drive_sync_log.append(f"❌ Sync: {e}")
+    else:
+        st.session_state.drive_sync_log.append("💻 Mode local")
 
 # ===========================
 # SESSION STATE
@@ -410,6 +427,13 @@ with st.sidebar:
     
     latest = get_latest_invoice_folder()
     folder_date = latest["date"].strftime("%d %b. %Y") if latest else "—"
+    
+    # Diagnostic Drive sync (visible au premier chargement)
+    _sync_log = st.session_state.get("drive_sync_log", [])
+    if _sync_log:
+        with st.expander("🔧 Drive sync", expanded=False):
+            for _msg in _sync_log:
+                st.caption(_msg)
     
     st.markdown(f"""
     <div class="sidebar-info-fixed">
