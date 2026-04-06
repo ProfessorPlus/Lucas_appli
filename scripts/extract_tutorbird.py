@@ -337,11 +337,18 @@ def run_extraction(secrets, start_date, end_date, start_time, end_time, data_dir
         total_lessons = sum(len(f["lessons"]) for f in families.values())
         total_amount = sum(f["total_courses"] for f in families.values())
         
+        # Décomposition par devise
+        amounts_by_currency = {}
+        for fam in families.values():
+            currency = (fam.get("currency") or "chf").upper()
+            amounts_by_currency[currency] = amounts_by_currency.get(currency, 0) + fam.get("total_courses", 0)
+        
         return {
             "success": True,
             "families": len(families),
             "lessons": total_lessons,
             "amount": total_amount,
+            "amounts_by_currency": amounts_by_currency,
             "notion_profs_added": notion_count,
             "output_path": output_path,
             "drive_saved": drive_saved

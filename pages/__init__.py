@@ -611,11 +611,22 @@ def page_extract(ctx):
             if result.get("notion_profs_added", 0) > 0:
                 notion_msg = f"\n            - 📋 **{result['notion_profs_added']}** prof(s) hors TutorBird ajouté(s)"
             
+            # Décomposition par devise
+            amounts_by_currency = result.get("amounts_by_currency", {})
+            if len(amounts_by_currency) > 1:
+                parts = []
+                for cur in sorted(amounts_by_currency.keys()):
+                    amt = amounts_by_currency[cur]
+                    parts.append(f"{amt:,.2f} {cur}")
+                amount_display = " + ".join(parts)
+            else:
+                amount_display = f"{result['amount']:,.2f} CHF"
+            
             st.success(f"""
             ✅ **Extraction terminée !**
             - 📁 **{result['families']}** familles
             - 📚 **{result['lessons']}** leçons
-            - 💰 **{result['amount']:,.2f} CHF** total{notion_msg}
+            - 💰 **{amount_display}** total{notion_msg}
             """)
         else:
             st.error(f"❌ Erreur : {result['error']}")
@@ -2018,11 +2029,29 @@ Professor+
 
     # Identifier les familles multi-mois (impayés n-2 consolidés)
     _multimonth_ids = set()
+    
+    # Source 1: session_state (si on vient de la page Générer factures)
     _prev_unpaid = st.session_state.get("_previous_unpaid_data")
     if _prev_unpaid:
         _multimonth_ids = set(_prev_unpaid.keys())
-        if _multimonth_ids:
-            st.caption(f"📌 {len(_multimonth_ids)} famille(s) recevront le template multi-mois (impayés consolidés)")
+    
+    # Source 2: payment_links_output.json (plus fiable, persiste entre pages et reboots)
+    if not _multimonth_ids:
+        try:
+            _plinks_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
+            if os.path.exists(_plinks_path):
+                with open(_plinks_path, "r", encoding="utf-8") as f:
+                    _plinks_data = json.load(f)
+                for _pl in _plinks_data:
+                    if _pl.get("includes_previous_months") == "true" or str(_pl.get("metadata", {}).get("includes_previous_months", "")) == "true":
+                        _fid = _pl.get("family_id", "")
+                        if _fid:
+                            _multimonth_ids.add(_fid)
+        except Exception:
+            pass
+    
+    if _multimonth_ids:
+        st.caption(f"📌 {len(_multimonth_ids)} famille(s) recevront le template multi-mois (impayés consolidés)")
 
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch"):

@@ -323,6 +323,7 @@ def run_create_payment_links_no_split(
                 "payment_link_id": getattr(link, "id", None),
                 "invoice_date": today,
                 "mode": "no_split",
+                "includes_previous_months": "true" if prev_amount > 0 else "false",
             })
 
         update(90, "💾 Sauvegarde...")
