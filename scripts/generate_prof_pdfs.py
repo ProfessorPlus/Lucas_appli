@@ -157,7 +157,7 @@ def _circle(c, cx, cy, r, fill):
 # ===========================
 
 def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source):
-    """Draw one complete page."""
+    """Draw one complete teacher recap, spanning multiple pages if needed."""
     
     total_eur_raw = data.get("eur", 0) + data.get("chf_as_eur", 0)
     total_hours = data.get("total_hours", 0)
@@ -168,273 +168,282 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
     total_eur_from_details = sum(d.get("amount_eur", 0) for d in details)
     total_eur = total_eur_from_details if details else total_eur_raw
     
-    y = PH - MY_TOP
+    sorted_d = sorted(details, key=lambda d: d["date"])
     
-    # ─────────────────────────────
-    # HEADER
-    # ─────────────────────────────
-    
-    # Logo (round clipped look)
-    logo_size = 44
-    logo_x = MX
-    logo_y = y - logo_size
-    if logo_path and os.path.exists(logo_path):
-        try:
-            c.drawImage(logo_path, logo_x, logo_y, width=logo_size, height=logo_size, preserveAspectRatio=True, mask='auto')
-        except Exception:
-            # Fallback: P+ badge
-            _circle(c, MX + 22, y - 22, 22, NAVY)
-            c.setFillColor(WHITE)
-            c.setFont(FB, 16)
-            c.drawCentredString(MX + 22, y - 28, "P+")
-    else:
-        _circle(c, MX + 22, y - 22, 22, NAVY)
-        c.setFillColor(WHITE)
-        c.setFont(FB, 16)
-        c.drawCentredString(MX + 22, y - 28, "P+")
-    
-    # "Professor+" title
-    tx = MX + logo_size + 14
-    c.setFillColor(TXT)
-    c.setFont(FB, 20)
-    c.drawString(tx, y - 18, "Professor+")
-    
-    # Subtitle
-    c.setFillColor(TXT_LIGHT)
-    c.setFont(F, 9)
-    c.drawString(tx, y - 34, "Soutien scolaire personnalisé")
-    
-    # Right side: "Détail de paie"
-    c.setFillColor(NAVY)
-    c.setFont(FB, 24)
-    c.drawRightString(PW - MX, y - 16, "Détail de paie")
-    
-    # "Période : ..."
-    c.setFillColor(TXT_MID)
-    c.setFont(F, 10)
-    c.drawRightString(PW - MX, y - 36, f"Période : {mois_label}")
-    
-    y -= 58
-    
-    # Separator line
-    c.setStrokeColor(CARD_BORDER)
-    c.setLineWidth(0.75)
-    c.line(MX, y, PW - MX, y)
-    
-    y -= 30
-    
-    # ─────────────────────────────
-    # METRIC CARDS
-    # ─────────────────────────────
-    
-    gap = 10
-    # Card 1 (PROFESSEUR) wider, Card 4 (TOTAL) wider too
-    card1_w = CW * 0.34
-    card4_w = CW * 0.24
-    remaining = CW - card1_w - card4_w - 3 * gap
-    card_sm = remaining / 2
-    card_h = 62
-    
-    cards = [
-        (card1_w, "PROFESSEUR", teacher_name, TXT, 13),
-        (card_sm, "LEÇONS", str(nb_lessons), NAVY, 22),
-        (card_sm, "HEURES", f"{total_hours:.1f}h", NAVY, 22),
-        (card4_w, "TOTAL", f"{total_eur:,.2f} €", GREEN, 18),
-    ]
-    
-    cx = MX
-    for w, label, val, vc, fs in cards:
-        # Card bg + border
-        _rrect(c, cx, y - card_h, w, card_h, r=8, fill=CARD_BG, stroke=CARD_BORDER)
-        
-        # Label
-        c.setFillColor(TXT_LIGHT)
-        c.setFont(FB, 7)
-        c.drawString(cx + 14, y - 18, label)
-        
-        # Value
-        c.setFillColor(vc)
-        # Auto-size for long names
-        actual_fs = fs
-        if len(val) > 20 and fs > 11:
-            actual_fs = 11
-        
-        # For PROFESSEUR card: wrap on 2 lines if needed
-        if label == "PROFESSEUR":
-            max_text_w = w - 28  # padding left+right
-            text_w = c.stringWidth(val, FB, actual_fs)
-            if text_w > max_text_w:
-                # Split into 2 lines at the best space
-                words = val.split()
-                line1 = ""
-                line2 = ""
-                for word in words:
-                    test = (line1 + " " + word).strip()
-                    if c.stringWidth(test, FB, actual_fs) <= max_text_w:
-                        line1 = test
-                    else:
-                        line2 = (line2 + " " + word).strip()
-                c.setFont(FB, actual_fs)
-                c.drawString(cx + 14, y - card_h + 28, line1)
-                c.drawString(cx + 14, y - card_h + 12, line2)
-            else:
-                c.setFont(FB, actual_fs)
-                c.drawString(cx + 14, y - card_h + 18, val)
-        else:
-            c.setFont(FB, actual_fs)
-            c.drawString(cx + 14, y - card_h + 18, val)
-        
-        cx += w + gap
-    
-    y -= card_h + 30
-    
-    # ─────────────────────────────
-    # SECTION TITLE: "Détail des leçons"
-    # ─────────────────────────────
-    
-    c.setFillColor(NAVY)
-    c.setFont(FB, 14)
-    c.drawString(MX, y, "Détail des leçons")
-    
-    # Underline decoration
-    title_w = c.stringWidth("Détail des leçons", FB, 14)
-    c.setStrokeColor(NAVY)
-    c.setLineWidth(2)
-    c.line(MX, y - 5, MX + title_w, y - 5)
-    
-    y -= 28
-    
-    # ─────────────────────────────
-    # TABLE
-    # ─────────────────────────────
-    
+    rh = 28  # row height (compact)
     cols = [90, 150, 70, 100, 85]  # Date, Élève, Durée, Taux, Montant
     tw = sum(cols)
-    # Center the table
     tx0 = MX + (CW - tw) / 2
     
-    rh = 36  # row height
+    # Calculate how many rows fit on first page vs continuation pages
+    first_page_table_start_y = PH - MY_TOP - 58 - 30 - 62 - 30 - 28 - rh  # after header+cards+section title+table header
+    continuation_table_start_y = PH - MY_TOP - 30  # just top margin + small padding
+    footer_reserve = 80  # space for total row + footer
     
-    # Header row
-    _rrect(c, tx0, y - rh, tw, rh, r=5, fill=NAVY)
+    rows_first_page = max(1, int((first_page_table_start_y - MY_BOT - footer_reserve) / rh))
+    rows_per_cont_page = max(1, int((continuation_table_start_y - MY_BOT - footer_reserve) / rh))
     
-    hdrs = ["Date", "Élève", "Durée", "Taux horaire", "Montant"]
-    c.setFillColor(WHITE)
-    c.setFont(FB, 9)
-    hx = tx0
-    for i, h in enumerate(hdrs):
-        if i == len(hdrs) - 1:
-            c.drawRightString(hx + cols[i] - 12, y - rh + 13, h)
-        else:
-            c.drawString(hx + 12, y - rh + 13, h)
-        hx += cols[i]
+    # Determine pages needed
+    total_rows = len(sorted_d)
+    if total_rows <= rows_first_page:
+        pages_needed = 1
+    else:
+        remaining_after_first = total_rows - rows_first_page
+        pages_needed = 1 + math.ceil(remaining_after_first / rows_per_cont_page)
     
-    y -= rh
-    
-    # Data rows
-    sorted_d = sorted(details, key=lambda d: d["date"])
+    row_idx = 0  # current row index in sorted_d
     tot_min = 0
     tot_amt = 0.0
     
-    for idx, d in enumerate(sorted_d):
-        # Alternating background
-        bg = ROW_ALT if idx % 2 == 0 else WHITE
-        c.setFillColor(bg)
-        c.rect(tx0, y - rh, tw, rh, fill=1, stroke=0)
+    for page_num in range(pages_needed):
+        if page_num > 0:
+            c.showPage()
         
-        # Bottom border
-        c.setStrokeColor(ROW_BORDER)
-        c.setLineWidth(0.5)
-        c.line(tx0, y - rh, tx0 + tw, y - rh)
+        y = PH - MY_TOP
         
-        rx = tx0
-        ry = y - rh + 13
-        
-        # Date
-        c.setFillColor(TXT)
-        c.setFont(F, 9)
-        c.drawString(rx + 12, ry, d["date"])
-        rx += cols[0]
-        
-        # Élève — clean up "Last, First" → "Last First"
-        student = d.get("student", "")
-        if "," in student:
-            parts = [p.strip() for p in student.split(",")]
-            student = " ".join(parts)
-        if len(student) > 22:
-            student = student[:20] + "…"
-        c.drawString(rx + 12, ry, student)
-        rx += cols[1]
-        
-        # Durée
-        dur = d.get("duration_min", 0)
-        tot_min += dur
-        c.drawString(rx + 12, ry, f"{dur} min")
-        rx += cols[2]
-        
-        # Taux horaire
-        rate = d.get("rate", 0)
-        cur = d.get("currency", "")
-        if "CHF" in cur:
-            taux = f"{rate:,.2f} CHF/h"
+        # ─────────────────────────────
+        # HEADER (first page only)
+        # ─────────────────────────────
+        if page_num == 0:
+            # Logo
+            logo_size = 44
+            logo_x = MX
+            logo_y = y - logo_size
+            if logo_path and os.path.exists(logo_path):
+                try:
+                    c.drawImage(logo_path, logo_x, logo_y, width=logo_size, height=logo_size, preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    _circle(c, MX + 22, y - 22, 22, NAVY)
+                    c.setFillColor(WHITE)
+                    c.setFont(FB, 16)
+                    c.drawCentredString(MX + 22, y - 28, "P+")
+            else:
+                _circle(c, MX + 22, y - 22, 22, NAVY)
+                c.setFillColor(WHITE)
+                c.setFont(FB, 16)
+                c.drawCentredString(MX + 22, y - 28, "P+")
+            
+            # "Professor+" title
+            tx = MX + logo_size + 14
+            c.setFillColor(TXT)
+            c.setFont(FB, 20)
+            c.drawString(tx, y - 18, "Professor+")
+            
+            # Subtitle
+            c.setFillColor(TXT_LIGHT)
+            c.setFont(F, 9)
+            c.drawString(tx, y - 34, "Soutien scolaire personnalisé")
+            
+            # Right side: "Détail de paie"
+            c.setFillColor(NAVY)
+            c.setFont(FB, 24)
+            c.drawRightString(PW - MX, y - 16, "Détail de paie")
+            
+            # "Période : ..."
+            c.setFillColor(TXT_MID)
+            c.setFont(F, 10)
+            c.drawRightString(PW - MX, y - 36, f"Période : {mois_label}")
+            
+            y -= 58
+            
+            # Separator line
+            c.setStrokeColor(CARD_BORDER)
+            c.setLineWidth(0.75)
+            c.line(MX, y, PW - MX, y)
+            
+            y -= 30
+            
+            # ─────────────────────────────
+            # METRIC CARDS
+            # ─────────────────────────────
+            gap = 10
+            card1_w = CW * 0.34
+            card4_w = CW * 0.24
+            remaining_w = CW - card1_w - card4_w - 3 * gap
+            card_sm = remaining_w / 2
+            card_h = 62
+            
+            cards = [
+                (card1_w, "PROFESSEUR", teacher_name, TXT, 13),
+                (card_sm, "LEÇONS", str(nb_lessons), NAVY, 22),
+                (card_sm, "HEURES", f"{total_hours:.1f}h", NAVY, 22),
+                (card4_w, "TOTAL", f"{total_eur:,.2f} €", GREEN, 18),
+            ]
+            
+            cx = MX
+            for w, label, val, vc, fs in cards:
+                _rrect(c, cx, y - card_h, w, card_h, r=8, fill=CARD_BG, stroke=CARD_BORDER)
+                c.setFillColor(TXT_LIGHT)
+                c.setFont(FB, 7)
+                c.drawString(cx + 14, y - 18, label)
+                c.setFillColor(vc)
+                actual_fs = fs
+                if len(val) > 20 and fs > 11:
+                    actual_fs = 11
+                if label == "PROFESSEUR":
+                    max_text_w = w - 28
+                    text_w = c.stringWidth(val, FB, actual_fs)
+                    if text_w > max_text_w:
+                        words = val.split()
+                        line1 = ""
+                        line2 = ""
+                        for word in words:
+                            test = (line1 + " " + word).strip()
+                            if c.stringWidth(test, FB, actual_fs) <= max_text_w:
+                                line1 = test
+                            else:
+                                line2 = (line2 + " " + word).strip()
+                        c.setFont(FB, actual_fs)
+                        c.drawString(cx + 14, y - card_h + 28, line1)
+                        c.drawString(cx + 14, y - card_h + 12, line2)
+                    else:
+                        c.setFont(FB, actual_fs)
+                        c.drawString(cx + 14, y - card_h + 18, val)
+                else:
+                    c.setFont(FB, actual_fs)
+                    c.drawString(cx + 14, y - card_h + 18, val)
+                cx += w + gap
+            
+            y -= card_h + 30
+            
+            # ─────────────────────────────
+            # SECTION TITLE: "Détail des leçons"
+            # ─────────────────────────────
+            c.setFillColor(NAVY)
+            c.setFont(FB, 14)
+            c.drawString(MX, y, "Détail des leçons")
+            title_w = c.stringWidth("Détail des leçons", FB, 14)
+            c.setStrokeColor(NAVY)
+            c.setLineWidth(2)
+            c.line(MX, y - 5, MX + title_w, y - 5)
+            y -= 28
         else:
-            taux = f"{rate:,.2f} €/h"
-        c.drawString(rx + 12, ry, taux)
-        rx += cols[3]
+            # Continuation page: just "Détail des leçons (suite)" + page number
+            c.setFillColor(TXT_LIGHT)
+            c.setFont(F, 9)
+            c.drawRightString(PW - MX, y - 10, f"{teacher_name} — {mois_label} — Page {page_num + 1}/{pages_needed}")
+            y -= 30
         
-        # Montant (right-aligned, bold)
-        amt = d.get("amount_eur", 0)
-        tot_amt += amt
+        # ─────────────────────────────
+        # TABLE HEADER (every page)
+        # ─────────────────────────────
+        _rrect(c, tx0, y - rh, tw, rh, r=5, fill=NAVY)
+        hdrs = ["Date", "Élève", "Durée", "Taux horaire", "Montant"]
+        c.setFillColor(WHITE)
         c.setFont(FB, 9)
-        c.drawRightString(rx + cols[4] - 12, ry, f"{amt:,.2f} €")
-        
+        hx = tx0
+        for i, h in enumerate(hdrs):
+            if i == len(hdrs) - 1:
+                c.drawRightString(hx + cols[i] - 12, y - rh + 10, h)
+            else:
+                c.drawString(hx + 12, y - rh + 10, h)
+            hx += cols[i]
         y -= rh
-    
-    # ─────────────────────────────
-    # TOTAL ROW
-    # ─────────────────────────────
-    
-    trh = 40
-    
-    # Navy left portion (TOTAL + hours)
-    left_w = cols[0] + cols[1] + cols[2]
-    _rrect(c, tx0, y - trh, left_w, trh, r=0, fill=NAVY)
-    
-    # Light right portion
-    right_w = tw - left_w
-    c.setFillColor(CARD_BG)
-    c.rect(tx0 + left_w, y - trh, right_w, trh, fill=1, stroke=0)
-    
-    # TOTAL text
-    c.setFillColor(WHITE)
-    c.setFont(FB, 11)
-    c.drawString(tx0 + 12, y - trh + 14, "TOTAL")
-    
-    # Total hours
-    h, m = divmod(tot_min, 60)
-    dur_str = f"{h}h{m:02d}" if m else f"{h}h"
-    c.drawString(tx0 + cols[0] + cols[1] + 12, y - trh + 14, dur_str)
-    
-    # Total amount (green, large, bold)
-    c.setFillColor(GREEN)
-    c.setFont(FB, 15)
-    c.drawRightString(tx0 + tw - 12, y - trh + 12, f"{tot_amt:,.2f} €")
-    
-    y -= trh
-    
-    # ─────────────────────────────
-    # FOOTER
-    # ─────────────────────────────
-    
-    fy = MY_BOT + 8
-    c.setStrokeColor(CARD_BORDER)
-    c.setLineWidth(0.5)
-    c.line(MX, fy + 12, PW - MX, fy + 12)
-    
-    c.setFillColor(TXT_LIGHT)
-    c.setFont(F, 7)
-    c.drawString(MX, fy, f"Taux de change appliqué : 1 CHF = {fx_rate} EUR (source: {fx_source})")
-    c.drawRightString(PW - MX, fy, "Généré automatiquement — Professor+")
+        
+        # ─────────────────────────────
+        # DATA ROWS (for this page)
+        # ─────────────────────────────
+        if page_num == 0:
+            rows_this_page = rows_first_page
+        else:
+            rows_this_page = rows_per_cont_page
+        
+        rows_drawn = 0
+        while row_idx < total_rows and rows_drawn < rows_this_page:
+            d = sorted_d[row_idx]
+            
+            # Alternating background
+            bg = ROW_ALT if row_idx % 2 == 0 else WHITE
+            c.setFillColor(bg)
+            c.rect(tx0, y - rh, tw, rh, fill=1, stroke=0)
+            
+            # Bottom border
+            c.setStrokeColor(ROW_BORDER)
+            c.setLineWidth(0.5)
+            c.line(tx0, y - rh, tx0 + tw, y - rh)
+            
+            rx = tx0
+            ry = y - rh + 10
+            
+            # Date
+            c.setFillColor(TXT)
+            c.setFont(F, 9)
+            c.drawString(rx + 12, ry, d["date"])
+            rx += cols[0]
+            
+            # Élève
+            student = d.get("student", "")
+            if "," in student:
+                parts = [p.strip() for p in student.split(",")]
+                student = " ".join(parts)
+            if len(student) > 22:
+                student = student[:20] + "…"
+            c.drawString(rx + 12, ry, student)
+            rx += cols[1]
+            
+            # Durée
+            dur = d.get("duration_min", 0)
+            tot_min += dur
+            c.drawString(rx + 12, ry, f"{dur} min")
+            rx += cols[2]
+            
+            # Taux horaire
+            rate = d.get("rate", 0)
+            cur = d.get("currency", "")
+            if "CHF" in cur:
+                taux = f"{rate:,.2f} CHF/h"
+            else:
+                taux = f"{rate:,.2f} €/h"
+            c.drawString(rx + 12, ry, taux)
+            rx += cols[3]
+            
+            # Montant
+            amt = d.get("amount_eur", 0)
+            tot_amt += amt
+            c.setFont(FB, 9)
+            c.drawRightString(rx + cols[4] - 12, ry, f"{amt:,.2f} €")
+            
+            y -= rh
+            row_idx += 1
+            rows_drawn += 1
+        
+        # ─────────────────────────────
+        # TOTAL ROW + FOOTER (last page only)
+        # ─────────────────────────────
+        is_last_page = (page_num == pages_needed - 1)
+        
+        if is_last_page:
+            trh = 34
+            left_w = cols[0] + cols[1] + cols[2]
+            _rrect(c, tx0, y - trh, left_w, trh, r=0, fill=NAVY)
+            right_w = tw - left_w
+            c.setFillColor(CARD_BG)
+            c.rect(tx0 + left_w, y - trh, right_w, trh, fill=1, stroke=0)
+            
+            c.setFillColor(WHITE)
+            c.setFont(FB, 11)
+            c.drawString(tx0 + 12, y - trh + 12, "TOTAL")
+            
+            h, m = divmod(tot_min, 60)
+            dur_str = f"{h}h{m:02d}" if m else f"{h}h"
+            c.drawString(tx0 + cols[0] + cols[1] + 12, y - trh + 12, dur_str)
+            
+            c.setFillColor(GREEN)
+            c.setFont(FB, 15)
+            c.drawRightString(tx0 + tw - 12, y - trh + 10, f"{tot_amt:,.2f} €")
+            
+            y -= trh
+            
+            # Footer
+            fy = MY_BOT + 8
+            c.setStrokeColor(CARD_BORDER)
+            c.setLineWidth(0.5)
+            c.line(MX, fy + 12, PW - MX, fy + 12)
+            
+            c.setFillColor(TXT_LIGHT)
+            c.setFont(F, 7)
+            c.drawString(MX, fy, f"Taux de change appliqué : 1 CHF = {fx_rate} EUR (source: {fx_source})")
+            c.drawRightString(PW - MX, fy, "Généré automatiquement — Professor+")
 
 
 # ===========================

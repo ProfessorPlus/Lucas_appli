@@ -1276,20 +1276,22 @@ def run_scan_and_compare(secrets, data, invoice_folder_path, callback=None):
         # ===========================
         payment_links_data = []
         
-        # invoice_folder_path = .../professor_plus_V9/Factures/2026/Février 2026 - 02-02-2026
-        # On doit aller vers .../professor_plus_V9/data/payment_links_output.json
-        
         # Essayer plusieurs chemins possibles
         possible_paths = []
         
-        # Remonter de 1, 2, 3, 4 niveaux et chercher data/payment_links_output.json
-        current = invoice_folder_path
-        for _ in range(5):
-            current = os.path.dirname(current)
-            possible_paths.append(os.path.join(current, "data", "payment_links_output.json"))
+        # Remonter de 1, 2, 3, 4 niveaux depuis invoice_folder_path
+        if invoice_folder_path:
+            current = invoice_folder_path
+            for _ in range(5):
+                current = os.path.dirname(current)
+                possible_paths.append(os.path.join(current, "data", "payment_links_output.json"))
+            possible_paths.append(os.path.join(os.path.dirname(invoice_folder_path), "data", "payment_links_output.json"))
         
-        # Aussi chercher directement à côté du dossier Factures
-        possible_paths.append(os.path.join(os.path.dirname(invoice_folder_path), "data", "payment_links_output.json"))
+        # Chemins Streamlit Cloud standard
+        possible_paths.extend([
+            "/tmp/data/payment_links_output.json",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "payment_links_output.json"),
+        ])
         
         found_path = None
         for path in possible_paths:
@@ -1303,6 +1305,17 @@ def run_scan_and_compare(secrets, data, invoice_folder_path, callback=None):
                     payment_links_data = json.load(f)
             except Exception as e:
                 return {"success": False, "error": f"Erreur lecture {found_path}: {str(e)}"}
+        
+        # Fallback: charger depuis Google Drive via storage_manager
+        if not payment_links_data:
+            try:
+                from scripts.storage_manager import load_json as _storage_load_json
+                drive_data = _storage_load_json("payment_links_output.json", "data", default=None)
+                if drive_data:
+                    payment_links_data = drive_data
+                    update(10, "📁 payment_links_output.json chargé depuis Google Drive")
+            except Exception as e:
+                print(f"⚠️ Fallback Drive payment_links: {e}")
         
         if not payment_links_data:
             return {"success": False, "error": f"Fichier payment_links_output.json non trouvé. Chemins testés: {possible_paths[:3]}"}
