@@ -344,6 +344,39 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
         
         print(f"🔍 DEBUG: {total} familles, {len(euro_parents)} familles EUR")
         
+        # Charger les montants cumulés depuis payment_links_output.json
+        # (inclut les impayés n-2 si additional_amounts a été utilisé)
+        cumulative_amounts = {}
+        try:
+            pl_paths = [
+                os.path.join(base_dir, "data", "payment_links_output.json"),
+                "/tmp/data/payment_links_output.json",
+            ]
+            for pl_path in pl_paths:
+                if os.path.exists(pl_path):
+                    with open(pl_path, "r", encoding="utf-8") as f:
+                        pl_data = json.load(f)
+                    for entry in pl_data:
+                        fid = entry.get("family_id", "")
+                        amt = entry.get("amount", 0)
+                        if fid and amt > 0:
+                            cumulative_amounts[fid] = amt
+                    break
+            if not cumulative_amounts:
+                try:
+                    from scripts.storage_manager import load_json as _sl_json
+                    pl_data = _sl_json("payment_links_output.json", "data", default=None)
+                    if pl_data:
+                        for entry in pl_data:
+                            fid = entry.get("family_id", "")
+                            amt = entry.get("amount", 0)
+                            if fid and amt > 0:
+                                cumulative_amounts[fid] = amt
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"⚠️ Impossible de charger payment_links_output.json: {e}")
+        
         for fam_id, fam in data.items():
             current += 1
             progress = int(20 + (current / total * 60))
@@ -365,6 +398,14 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
             
             # Recalculer le total depuis les leçons FILTRÉES (total_courses inclut les absences !)
             total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
+            
+            # Si un montant cumulé existe dans payment_links_output.json
+            # (inclut les impayés n-2), l'utiliser à la place
+            if fam_id in cumulative_amounts:
+                cumul_amt = cumulative_amounts[fam_id]
+                if cumul_amt > total_amount:
+                    print(f"  📦 {parent_name}: montant cumulé {cumul_amt} (au lieu de {total_amount:.2f}) — inclut impayés n-2")
+                    total_amount = cumul_amt
             
             # Heures
             total_hours = sum((L.get("duration_min") or 0) / 60 for L in lessons_filtered)
