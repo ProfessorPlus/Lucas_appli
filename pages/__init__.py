@@ -2724,7 +2724,19 @@ def page_update(ctx):
                 progress.progress(p)
                 status.info(m)
             
-            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros, invoice_date_override=invoice_date_from_folder)
+            # Calculer additional_amounts depuis les données impayées n-2
+            _update_additional_amounts = None
+            _prev_unpaid_for_notion = st.session_state.get("_previous_unpaid_data")
+            if _prev_unpaid_for_notion:
+                _update_additional_amounts = {}
+                for _fid, _fdata in _prev_unpaid_for_notion.items():
+                    _lessons = _fdata.get("lessons", [])
+                    _billable = [L for L in _lessons if L.get("attendance_status") != "AbsentNotice"]
+                    _fam_total = sum(float(L.get("amount") or 0) for L in _billable)
+                    if _fam_total > 0:
+                        _update_additional_amounts[_fid] = _fam_total
+            
+            result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros, invoice_date_override=invoice_date_from_folder, additional_amounts=_update_additional_amounts)
             
             if result["success"]:
                 added = result.get('added', 0)

@@ -64,7 +64,7 @@ def _pick_first_existing(db_properties, *names):
     return names[0] if names else None
 
 
-def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, familles_euros=None, invoice_date_override=None):
+def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, familles_euros=None, invoice_date_override=None, additional_amounts=None):
     """
     Ajoute les nouvelles lignes dans Notion ET crée les sous-pages profs.
     
@@ -74,6 +74,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
         base_dir: Dossier racine
         callback: Fonction callback(progress, message)
         no_split: Si True, pas de colonne prof, pas de sous-pages profs
+        additional_amounts: dict {family_id: montant_impayés_n2} — montants impayés à ajouter au total
     
     Returns:
         dict: {"success": bool, "added": int, "skipped": int, "pages_created": int, "error": str}
@@ -399,12 +400,18 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
             # Recalculer le total depuis les leçons FILTRÉES (total_courses inclut les absences !)
             total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
             
-            # Si un montant cumulé existe dans payment_links_output.json
-            # (inclut les impayés n-2), l'utiliser à la place
+            # Ajouter les montants impayés n-2 si fournis
+            prev_amount = 0.0
+            if additional_amounts and fam_id in additional_amounts:
+                prev_amount = float(additional_amounts[fam_id])
+                total_amount += prev_amount
+                print(f"  📦 {parent_name}: +{prev_amount:.2f} impayés n-2 → total {total_amount:.2f}")
+            
+            # Fallback : si un montant cumulé supérieur existe dans payment_links_output.json
             if fam_id in cumulative_amounts:
                 cumul_amt = cumulative_amounts[fam_id]
                 if cumul_amt > total_amount:
-                    print(f"  📦 {parent_name}: montant cumulé {cumul_amt} (au lieu de {total_amount:.2f}) — inclut impayés n-2")
+                    print(f"  📦 {parent_name}: montant cumulé Stripe {cumul_amt} (au lieu de {total_amount:.2f})")
                     total_amount = cumul_amt
             
             # Heures
