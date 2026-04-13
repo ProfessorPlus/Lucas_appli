@@ -160,9 +160,12 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
     """Draw one complete teacher recap, spanning multiple pages if needed."""
     
     total_eur_raw = data.get("eur", 0) + data.get("chf_as_eur", 0)
-    total_hours = data.get("total_hours", 0)
     nb_lessons = data.get("nb_lessons", 0)
     details = data.get("details", [])
+    
+    # Recalculer total_hours depuis les détails pour cohérence header/footer
+    total_hours_from_details = sum(d.get("duration_min", 0) for d in details) / 60.0
+    total_hours = total_hours_from_details if details else data.get("total_hours", 0)
     
     # Utiliser la somme des montants détaillés (déjà arrondis) pour cohérence
     total_eur_from_details = sum(d.get("amount_eur", 0) for d in details)

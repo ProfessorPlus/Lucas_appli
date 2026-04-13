@@ -345,38 +345,55 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
         
         print(f"🔍 DEBUG: {total} familles, {len(euro_parents)} familles EUR")
         
-        # Charger les montants cumulés depuis payment_links_output.json
-        # (inclut les impayés n-2 si additional_amounts a été utilisé)
-        cumulative_amounts = {}
+        # ===========================
+        # CHARGER LES MONTANTS STRIPE (source de vérité pour les montants cumulés)
+        # ===========================
+        # payment_links_output.json contient le montant exact que Stripe va facturer,
+        # incluant les impayés n-2 si additional_amounts a été utilisé.
+        # Le montant Notion DOIT correspondre au montant Stripe pour que la sync fonctionne.
+        stripe_amounts = {}
+        _pl_loaded_from = None
+        
+        # Source 1: storage_manager (gère local + Drive automatiquement)
         try:
-            pl_paths = [
+            from scripts.storage_manager import load_json as _storage_load_json
+            pl_data = _storage_load_json("payment_links_output.json", "data", default=None)
+            if pl_data and isinstance(pl_data, list):
+                for entry in pl_data:
+                    fid = entry.get("family_id", "")
+                    amt = entry.get("amount", 0)
+                    if fid and amt and float(amt) > 0:
+                        stripe_amounts[fid] = float(amt)
+                _pl_loaded_from = "storage_manager"
+        except Exception as e:
+            print(f"⚠️ storage_manager payment_links: {e}")
+        
+        # Source 2: chemins locaux directs (fallback)
+        if not stripe_amounts:
+            for pl_path in [
                 os.path.join(base_dir, "data", "payment_links_output.json"),
                 "/tmp/data/payment_links_output.json",
-            ]
-            for pl_path in pl_paths:
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "payment_links_output.json"),
+            ]:
                 if os.path.exists(pl_path):
-                    with open(pl_path, "r", encoding="utf-8") as f:
-                        pl_data = json.load(f)
-                    for entry in pl_data:
-                        fid = entry.get("family_id", "")
-                        amt = entry.get("amount", 0)
-                        if fid and amt > 0:
-                            cumulative_amounts[fid] = amt
-                    break
-            if not cumulative_amounts:
-                try:
-                    from scripts.storage_manager import load_json as _sl_json
-                    pl_data = _sl_json("payment_links_output.json", "data", default=None)
-                    if pl_data:
-                        for entry in pl_data:
-                            fid = entry.get("family_id", "")
-                            amt = entry.get("amount", 0)
-                            if fid and amt > 0:
-                                cumulative_amounts[fid] = amt
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"⚠️ Impossible de charger payment_links_output.json: {e}")
+                    try:
+                        with open(pl_path, "r", encoding="utf-8") as f:
+                            pl_data = json.load(f)
+                        if isinstance(pl_data, list):
+                            for entry in pl_data:
+                                fid = entry.get("family_id", "")
+                                amt = entry.get("amount", 0)
+                                if fid and amt and float(amt) > 0:
+                                    stripe_amounts[fid] = float(amt)
+                            _pl_loaded_from = pl_path
+                            break
+                    except Exception as e:
+                        print(f"⚠️ Erreur lecture {pl_path}: {e}")
+        
+        if stripe_amounts:
+            print(f"✅ {len(stripe_amounts)} montants Stripe chargés depuis {_pl_loaded_from}")
+        else:
+            print(f"⚠️ payment_links_output.json non trouvé — montants calculés depuis les leçons uniquement")
         
         for fam_id, fam in data.items():
             current += 1
@@ -398,21 +415,21 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
                 continue
             
             # Recalculer le total depuis les leçons FILTRÉES (total_courses inclut les absences !)
-            total_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
+            lessons_amount = sum(float(L.get("amount") or 0) for L in lessons_filtered)
             
-            # Ajouter les montants impayés n-2 si fournis
-            prev_amount = 0.0
-            if additional_amounts and fam_id in additional_amounts:
-                prev_amount = float(additional_amounts[fam_id])
-                total_amount += prev_amount
-                print(f"  📦 {parent_name}: +{prev_amount:.2f} impayés n-2 → total {total_amount:.2f}")
-            
-            # Fallback : si un montant cumulé supérieur existe dans payment_links_output.json
-            if fam_id in cumulative_amounts:
-                cumul_amt = cumulative_amounts[fam_id]
-                if cumul_amt > total_amount:
-                    print(f"  📦 {parent_name}: montant cumulé Stripe {cumul_amt} (au lieu de {total_amount:.2f})")
-                    total_amount = cumul_amt
+            # Le montant final pour Notion : utiliser le montant Stripe si disponible
+            # car c'est le montant exact que le client paie (inclut les impayés n-2)
+            if fam_id in stripe_amounts:
+                total_amount = stripe_amounts[fam_id]
+                if abs(total_amount - lessons_amount) > 0.01:
+                    print(f"  📦 {parent_name}: montant Stripe {total_amount:.2f} (leçons={lessons_amount:.2f}, diff={total_amount - lessons_amount:.2f} impayés)")
+            else:
+                total_amount = lessons_amount
+                # Fallback: ajouter les montants impayés n-2 si fournis via session_state
+                if additional_amounts and fam_id in additional_amounts:
+                    prev_amount = float(additional_amounts[fam_id])
+                    total_amount += prev_amount
+                    print(f"  📦 {parent_name}: +{prev_amount:.2f} impayés (session) → total {total_amount:.2f}")
             
             # Heures
             total_hours = sum((L.get("duration_min") or 0) / 60 for L in lessons_filtered)

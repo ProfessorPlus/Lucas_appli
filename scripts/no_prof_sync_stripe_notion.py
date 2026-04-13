@@ -46,7 +46,7 @@ def _to_dict(obj):
         return {}
     if isinstance(obj, dict):
         return obj
-    # Stripe SDK v15+ : utiliser to_dict() ou to_dict_recursive()
+    # Stripe SDK v15+ : to_dict_recursive() ou to_dict()
     if hasattr(obj, "to_dict_recursive"):
         try:
             return obj.to_dict_recursive()
@@ -57,8 +57,7 @@ def _to_dict(obj):
             return obj.to_dict()
         except Exception:
             pass
-    # Fallback : accéder aux attributs connus directement
-    # Ne PAS utiliser dict(obj) — crash avec KeyError: 0 sur Stripe SDK v15
+    # Fallback par attributs connus — JAMAIS dict(obj) qui crash sur SDK v15
     result = {}
     for attr in ("metadata", "billing_details", "payment_intent", "customer",
                  "id", "amount", "currency", "status", "created", "receipt_url",
@@ -74,18 +73,14 @@ def _to_dict(obj):
 
 def _metadata_dict(obj):
     """Extrait les metadata d'un objet Stripe en dict Python."""
-    # Accès direct à l'attribut metadata
     raw_meta = getattr(obj, "metadata", None)
     if raw_meta is None:
-        # Fallback via _to_dict
         data = _to_dict(obj)
         raw_meta = data.get("metadata")
-    
     if raw_meta is None:
         return {}
     if isinstance(raw_meta, dict):
         return raw_meta
-    # StripeObject metadata → to_dict()
     if hasattr(raw_meta, "to_dict"):
         try:
             return raw_meta.to_dict()
@@ -96,7 +91,7 @@ def _metadata_dict(obj):
             return raw_meta.to_dict_recursive()
         except Exception:
             pass
-    # Fallback : accéder aux clés connues
+    # Fallback par clés connues
     result = {}
     for key in ("mode", "parent_name", "family_name", "parent_email", "customer_email",
                 "email", "teacher_names", "product_name", "invoice_date", "currency",
