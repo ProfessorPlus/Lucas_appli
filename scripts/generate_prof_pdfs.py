@@ -164,8 +164,12 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
     details = data.get("details", [])
     
     # Recalculer total_hours depuis les détails pour cohérence header/footer
-    total_hours_from_details = sum(d.get("duration_min", 0) for d in details) / 60.0
-    total_hours = total_hours_from_details if details else data.get("total_hours", 0)
+    total_minutes_from_details = sum(d.get("duration_min", 0) for d in details)
+    total_hours = total_minutes_from_details / 60.0 if details else data.get("total_hours", 0)
+    
+    # Format heures en XhYY (même format header et footer)
+    _th, _tm = divmod(int(round(total_minutes_from_details)), 60) if details else divmod(int(round(total_hours * 60)), 60)
+    total_hours_display = f"{_th}h{_tm:02d}" if _tm else f"{_th}h"
     
     # Utiliser la somme des montants détaillés (déjà arrondis) pour cohérence
     total_eur_from_details = sum(d.get("amount_eur", 0) for d in details)
@@ -269,7 +273,7 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
             cards = [
                 (card1_w, "PROFESSEUR", teacher_name, TXT, 13),
                 (card_sm, "LEÇONS", str(nb_lessons), NAVY, 22),
-                (card_sm, "HEURES", f"{total_hours:.1f}h", NAVY, 22),
+                (card_sm, "HEURES", total_hours_display, NAVY, 22),
                 (card4_w, "TOTAL", f"{total_eur:,.2f} €", GREEN, 18),
             ]
             
