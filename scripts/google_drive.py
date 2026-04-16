@@ -228,7 +228,7 @@ def find_file(service, filename, folder_id=None):
     query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
     results = service.files().list(
         q=query,
-        fields="files(id, name, modifiedTime)",
+        fields="files(id, name, modifiedTime, size)",
         **_list_kwargs(),
     ).execute()
     files = results.get('files', [])
@@ -494,12 +494,15 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
                     media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
                     
                     if existing:
+                        # Forcer une vraie mise à jour du contenu (pas juste metadata)
                         file = service.files().update(
                             fileId=existing['id'],
                             media_body=media,
                             **_file_kwargs(),
                         ).execute()
-                        print(f"   ✅ Mis à jour: {filename} (file_id={file.get('id')})")
+                        old_size = existing.get('size', '?')
+                        new_size = os.path.getsize(local_path)
+                        print(f"   ✅ Mis à jour: {filename} (file_id={file.get('id')}, old_size={old_size}, new_size={new_size})")
                     else:
                         file_metadata = {
                             'name': drive_filename,

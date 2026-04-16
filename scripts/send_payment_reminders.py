@@ -348,35 +348,55 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                 attached_count = 0
                 if invoice_folder and os.path.exists(invoice_folder):
                     parent_norm = normalize(family['parent_name'])
+                    # Trouver le MEILLEUR match possible (pas le premier qui passe le seuil)
+                    best_match = None
+                    best_score = 0.0
                     for item in os.listdir(invoice_folder):
                         item_path = os.path.join(invoice_folder, item)
                         if os.path.isdir(item_path):
                             folder_norm = normalize(item)
-                            score = SequenceMatcher(None, folder_norm, parent_norm).ratio()
-                            if score > 0.7 or folder_norm == parent_norm or names_match(folder_norm, parent_norm):
-                                for pdf in os.listdir(item_path):
-                                    if pdf.lower().endswith('.pdf'):
-                                        invoice_path = os.path.join(item_path, pdf)
-                                        with open(invoice_path, 'rb') as f:
-                                            part = MIMEBase('application', 'pdf')
-                                            part.set_payload(f.read())
-                                            encoders.encode_base64(part)
-                                            part.add_header('Content-Disposition', f'attachment; filename={pdf}')
-                                            msg.attach(part)
-                                            attached_count += 1
-                                break
-                        elif item.lower().endswith('.pdf'):
-                            pdf_lower = item.lower()
-                            name_parts = parent_norm.split()
-                            if any(part in pdf_lower for part in name_parts if len(part) > 2):
-                                invoice_path = os.path.join(invoice_folder, item)
+                            # Match exact requis : soit nom identique après normalisation,
+                            # soit au moins 2 mots en commun (noms composés)
+                            if folder_norm == parent_norm or names_match(folder_norm, parent_norm):
+                                # Calculer le score pour prendre le meilleur
+                                score = SequenceMatcher(None, folder_norm, parent_norm).ratio()
+                                # Priorité absolue au match exact
+                                if folder_norm == parent_norm:
+                                    score = 1.0
+                                if score > best_score:
+                                    best_score = score
+                                    best_match = item_path
+                    
+                    # Attacher les PDFs du meilleur dossier trouvé
+                    if best_match:
+                        for pdf in os.listdir(best_match):
+                            if pdf.lower().endswith('.pdf'):
+                                invoice_path = os.path.join(best_match, pdf)
                                 with open(invoice_path, 'rb') as f:
                                     part = MIMEBase('application', 'pdf')
                                     part.set_payload(f.read())
                                     encoders.encode_base64(part)
-                                    part.add_header('Content-Disposition', f'attachment; filename={item}')
+                                    part.add_header('Content-Disposition', f'attachment; filename={pdf}')
                                     msg.attach(part)
                                     attached_count += 1
+                    
+                    # Fallback : PDFs à la racine du dossier
+                    if attached_count == 0:
+                        for item in os.listdir(invoice_folder):
+                            if item.lower().endswith('.pdf'):
+                                pdf_lower = item.lower()
+                                name_parts = parent_norm.split()
+                                # Exiger que TOUS les mots significatifs du parent soient dans le nom du PDF
+                                significant_parts = [p for p in name_parts if len(p) > 2]
+                                if significant_parts and all(p in pdf_lower for p in significant_parts):
+                                    invoice_path = os.path.join(invoice_folder, item)
+                                    with open(invoice_path, 'rb') as f:
+                                        part = MIMEBase('application', 'pdf')
+                                        part.set_payload(f.read())
+                                        encoders.encode_base64(part)
+                                        part.add_header('Content-Disposition', f'attachment; filename={item}')
+                                        msg.attach(part)
+                                        attached_count += 1
 
                 server.sendmail(sender_email, recipient, msg.as_string())
                 sent += 1
