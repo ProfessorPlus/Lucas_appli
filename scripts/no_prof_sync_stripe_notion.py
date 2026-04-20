@@ -453,10 +453,10 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                 if abs(round(row["montant"], 2) - amount) >= 0.01:
                     continue
                 
-                # 2. Invoice date
+                # 2. Invoice date — préférence, pas filtre dur
+                date_matches = True
                 if sp_invoice_date and row.get("invoice_date"):
-                    if row["invoice_date"] != sp_invoice_date:
-                        continue
+                    date_matches = (row["invoice_date"] == sp_invoice_date)
                 
                 # 3. Professeur (au moins un prof en commun)
                 prof_match = True
@@ -484,14 +484,20 @@ def run_sync_stripe_notion_no_split(secrets_no_prof, secrets_notion, since_date=
                     if not eleve_match:
                         continue
                 
+                row["_date_matches"] = date_matches
                 matching_rows.append(row)
             
-            # Trier par pid décroissant (le plus récent en premier)
-            matching_rows.sort(key=lambda r: r.get("pid", 0), reverse=True)
+            # Trier : préférer les lignes avec date exacte, puis par pid décroissant
+            exact_date = [r for r in matching_rows if r.get("_date_matches", True)]
+            chosen = exact_date if exact_date else matching_rows
+            chosen.sort(key=lambda r: r.get("pid", 0), reverse=True)
+            
+            if not exact_date and matching_rows:
+                print(f"    ℹ️ Pas de match date exacte ({sp_invoice_date}), fallback sans date")
             
             # Séparer payés et non payés
-            unpaid = [r for r in matching_rows if not r["paid"]]
-            paid = [r for r in matching_rows if r["paid"]]
+            unpaid = [r for r in chosen if not r["paid"]]
+            paid = [r for r in chosen if r["paid"]]
             
             # Détecter les vrais doublons (lignes identiques sur les 4 colonnes)
             if len(unpaid) > 1:
