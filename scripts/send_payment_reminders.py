@@ -275,6 +275,7 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                        custom_subject=None, custom_body=None,
                        selected_families=None, send_to_test=False,
                        callback=None,
+                       custom_subject_en=None, custom_body_en=None,
                        custom_subject_carole=None, custom_body_carole=None):
     def update(progress, message):
         if callback:
@@ -330,17 +331,30 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                 msg['From'] = sender_email
                 msg['To'] = recipient
                 
-                # Déterminer le template: Carole (notion_hors_tb) ou standard
+                # Déterminer le template: Carole > EN > FR
                 is_carole = False
-                if data and custom_subject_carole:
+                is_english_fam = False
+                if data:
                     for fam in data.values():
-                        if fam.get("source") == "notion_hors_tb" and names_match(fam.get("parent_name", ""), family['parent_name']):
-                            is_carole = True
+                        fp = fam.get("parent_name", "")
+                        if fp and names_match(fp, family['parent_name']):
+                            # Carole Tessier uniquement
+                            if (fam.get("source") == "notion_hors_tb"
+                                and "carole" in fp.lower() and "tessier" in fp.lower()
+                                and custom_subject_carole):
+                                is_carole = True
+                            # Langue anglaise
+                            lang = str(fam.get("language", "fr")).strip().lower()
+                            if lang in {"anglais", "english", "en"}:
+                                is_english_fam = True
                             break
                 
                 if is_carole:
                     msg['Subject'] = custom_subject_carole
                     msg.attach(MIMEText(custom_body_carole or body, 'plain'))
+                elif is_english_fam and custom_subject_en:
+                    msg['Subject'] = custom_subject_en
+                    msg.attach(MIMEText(custom_body_en or body, 'plain'))
                 else:
                     msg['Subject'] = subject
                     msg.attach(MIMEText(body, 'plain'))

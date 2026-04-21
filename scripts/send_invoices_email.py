@@ -86,33 +86,6 @@ Professor+
     }
 
 
-def get_default_multimonth_template(month_name=None, year=None, unpaid_month_label="mois précédent"):
-    """Retourne le template d'email pour les familles avec impayés multi-mois."""
-    if not month_name:
-        now = datetime.now()
-        month_name = MONTHS_FR[now.month - 1]
-        year = now.year
-
-    return {
-        "subject": f"Facture(s) - Soutien scolaire - {month_name} {year} (incluant cours non réglés)",
-        "body": f"""Bonjour,
-
-J'espère que vous allez bien.
-
-Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_name} {year}.
-
-Cette facture inclut également les cours de {unpaid_month_label} qui n'ont pas encore été réglés.
-
-Vous pouvez régler le montant total directement en cliquant sur le bouton "Payer en ligne" dans la facture PDF. Un seul paiement couvre l'ensemble des cours.
-
-Merci de procéder au paiement dans les plus brefs délais.
-
-Cordialement,
-Professor+
-"""
-    }
-
-
 def _collect_pdfs_recursively(invoice_folder):
     pdf_files = []
     for root, _, files in os.walk(invoice_folder):
@@ -229,12 +202,7 @@ def run_send_invoices(secrets, data, invoice_folder,
                       custom_subject_carole=None, custom_body_carole=None,
                       custom_subject_multi=None, custom_body_multi=None,
                       multimonth_family_ids=None):
-    """Envoie les factures par email.
-    
-    Args:
-        multimonth_family_ids: set of family_ids that have consolidated unpaid months.
-            These families will receive the multi-month template instead of the standard one.
-    """
+    """Envoie les factures par email."""
 
     def update(progress, message):
         if callback:
@@ -300,12 +268,11 @@ def run_send_invoices(secrets, data, invoice_folder,
                 msg["From"] = sender_email
                 msg["To"] = recipient
 
-                # Déterminer le template: Multi-mois > Carole (Tessier only) > EN > FR
+                # Déterminer le template: Multi-mois > Carole (notion_hors_tb) > EN > FR
                 fam_data = data.get(family.get("family_id"), {})
-                _carole_parent = fam_data.get("parent_name") or fam_data.get("family_name") or ""
                 is_carole = (
                     fam_data.get("source") == "notion_hors_tb"
-                    and normalize_ascii(_carole_parent) in ("carole tessier", "tessier carole")
+                    and normalize_ascii(fam_data.get("parent_name", "")) == normalize_ascii("Carole Tessier")
                 )
                 is_multimonth = (
                     multimonth_family_ids

@@ -1981,19 +1981,86 @@ Professor+
 """
     }
     
-    tab_fr, tab_en, tab_carole, tab_multimonth = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier", "📌 Multi-mois (impayés)"])
+    # ===========================
+    # IDENTIFIER LES FAMILLES MULTI-MOIS (avant les tabs pour l'aperçu)
+    # ===========================
+    _multimonth_ids = set()
+    _prev_unpaid = st.session_state.get("_previous_unpaid_data")
+    if _prev_unpaid:
+        _multimonth_ids = set(_prev_unpaid.keys())
+    if not _multimonth_ids:
+        try:
+            _plinks_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
+            if os.path.exists(_plinks_path):
+                with open(_plinks_path, "r", encoding="utf-8") as f:
+                    _plinks_data = json.load(f)
+                for _pl in _plinks_data:
+                    if _pl.get("includes_previous_months") == "true" or str(_pl.get("metadata", {}).get("includes_previous_months", "")) == "true":
+                        _fid = _pl.get("family_id", "")
+                        if _fid:
+                            _multimonth_ids.add(_fid)
+        except Exception:
+            pass
+    
+    # ===========================
+    # PRÉ-CALCUL : répartition des familles par template
+    # ===========================
+    _fam_by_template = {"fr": [], "en": [], "carole": [], "multi": []}
+    for _fam in diagnostics["ready_families"]:
+        _fid = _fam.get("family_id", "")
+        _fname = _fam["parent_name"]
+        _fdata = data.get(_fid, {})
+        _is_multi = bool(_multimonth_ids and _fid in _multimonth_ids)
+        _is_carole_t = (
+            _fdata.get("source") == "notion_hors_tb"
+            and "carole" in _fname.lower() and "tessier" in _fname.lower()
+        )
+        _lang_t = str(_fdata.get("language", "fr")).strip().lower()
+        _is_en_t = _lang_t in {"anglais", "english", "en"}
+        
+        if _is_multi:
+            _fam_by_template["multi"].append(_fname)
+        elif _is_carole_t:
+            _fam_by_template["carole"].append(_fname)
+        elif _is_en_t:
+            _fam_by_template["en"].append(_fname)
+        else:
+            _fam_by_template["fr"].append(_fname)
+    
+    tab_fr, tab_en, tab_carole, tab_multimonth = st.tabs([
+        f"🇫🇷 Template français ({len(_fam_by_template['fr'])})",
+        f"🇬🇧 Template anglais ({len(_fam_by_template['en'])})",
+        f"👩 Carole Tessier ({len(_fam_by_template['carole'])})",
+        f"📌 Multi-mois ({len(_fam_by_template['multi'])})",
+    ])
     with tab_fr:
+        if _fam_by_template["fr"]:
+            st.caption(f"👥 **{len(_fam_by_template['fr'])}** famille(s) : " + ", ".join(_fam_by_template["fr"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="invoice_mail_subject_fr")
         body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="invoice_mail_body_fr")
     with tab_en:
+        if _fam_by_template["en"]:
+            st.caption(f"👥 **{len(_fam_by_template['en'])}** famille(s) : " + ", ".join(_fam_by_template["en"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="invoice_mail_subject_en")
         body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="invoice_mail_body_en")
     with tab_carole:
+        if _fam_by_template["carole"]:
+            st.caption(f"👥 **{len(_fam_by_template['carole'])}** famille(s) : " + ", ".join(_fam_by_template["carole"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         if carole_details:
             st.caption(f"📋 Détails heures Notion : **{carole_details}**")
         subject_carole = st.text_input("📝 Sujet", value=carole_template["subject"], key="invoice_mail_subject_carole")
         body_carole = st.text_area("✉️ Message", value=carole_template["body"], height=250, key="invoice_mail_body_carole")
     with tab_multimonth:
+        if _fam_by_template["multi"]:
+            st.caption(f"👥 **{len(_fam_by_template['multi'])}** famille(s) : " + ", ".join(_fam_by_template["multi"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         unpaid_month_label = st.session_state.get("_previous_month_label", "mois précédent")
         multimonth_template = get_default_multimonth_template(month_name, year, unpaid_month_label)
         st.caption(f"📌 Ce template est utilisé automatiquement pour les familles ayant des impayés de mois précédents inclus dans leur facture.")
@@ -2026,32 +2093,6 @@ Professor+
     )
     final_invoice_names = [name for name in selected_invoice_names if name not in excluded_invoice_names]
     selected_families = [f["family_id"] for f in families if f["parent_name"] in final_invoice_names]
-
-    # Identifier les familles multi-mois (impayés n-2 consolidés)
-    _multimonth_ids = set()
-    
-    # Source 1: session_state (si on vient de la page Générer factures)
-    _prev_unpaid = st.session_state.get("_previous_unpaid_data")
-    if _prev_unpaid:
-        _multimonth_ids = set(_prev_unpaid.keys())
-    
-    # Source 2: payment_links_output.json (plus fiable, persiste entre pages et reboots)
-    if not _multimonth_ids:
-        try:
-            _plinks_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
-            if os.path.exists(_plinks_path):
-                with open(_plinks_path, "r", encoding="utf-8") as f:
-                    _plinks_data = json.load(f)
-                for _pl in _plinks_data:
-                    if _pl.get("includes_previous_months") == "true" or str(_pl.get("metadata", {}).get("includes_previous_months", "")) == "true":
-                        _fid = _pl.get("family_id", "")
-                        if _fid:
-                            _multimonth_ids.add(_fid)
-        except Exception:
-            pass
-    
-    if _multimonth_ids:
-        st.caption(f"📌 {len(_multimonth_ids)} famille(s) recevront le template multi-mois (impayés consolidés)")
 
     if send_test:
         if st.button("📧 Envoyer le test à moi-même", width="stretch"):
@@ -2368,14 +2409,57 @@ Professor+
 """
     }
     
-    tab_fr, tab_en, tab_carole = st.tabs(["🇫🇷 Template français", "🇬🇧 Template anglais", "👩 Carole Tessier"])
+    # Charger les données TutorBird pour classer les familles par template
+    data_rem_classify = _try_load_data(ctx)
+    
+    # Pré-calcul : répartition des familles non payées par template
+    _rem_by_template = {"fr": [], "en": [], "carole": []}
+    for _fam_rem in with_email:
+        _fname_rem = _fam_rem["parent_name"]
+        _is_carole_r = False
+        _is_en_r = False
+        if data_rem_classify:
+            for _fd in data_rem_classify.values():
+                _fp = _fd.get("parent_name", "")
+                if _fp and _fp.lower().strip() == _fname_rem.lower().strip():
+                    if (_fd.get("source") == "notion_hors_tb"
+                        and "carole" in _fname_rem.lower() and "tessier" in _fname_rem.lower()):
+                        _is_carole_r = True
+                    _lr = str(_fd.get("language", "fr")).strip().lower()
+                    if _lr in {"anglais", "english", "en"}:
+                        _is_en_r = True
+                    break
+        if _is_carole_r:
+            _rem_by_template["carole"].append(_fname_rem)
+        elif _is_en_r:
+            _rem_by_template["en"].append(_fname_rem)
+        else:
+            _rem_by_template["fr"].append(_fname_rem)
+    
+    tab_fr, tab_en, tab_carole = st.tabs([
+        f"🇫🇷 Template français ({len(_rem_by_template['fr'])})",
+        f"🇬🇧 Template anglais ({len(_rem_by_template['en'])})",
+        f"👩 Carole Tessier ({len(_rem_by_template['carole'])})",
+    ])
     with tab_fr:
+        if _rem_by_template["fr"]:
+            st.caption(f"👥 **{len(_rem_by_template['fr'])}** famille(s) : " + ", ".join(_rem_by_template["fr"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         subject = st.text_input("📝 Sujet", value=template_fr["subject"], key="reminder_subject_fr")
         body = st.text_area("✉️ Message", value=template_fr["body"], height=250, key="reminder_body_fr")
     with tab_en:
+        if _rem_by_template["en"]:
+            st.caption(f"👥 **{len(_rem_by_template['en'])}** famille(s) : " + ", ".join(_rem_by_template["en"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         subject_en = st.text_input("📝 Subject", value=template_en["subject"], key="reminder_subject_en")
         body_en = st.text_area("✉️ Message", value=template_en["body"], height=250, key="reminder_body_en")
     with tab_carole:
+        if _rem_by_template["carole"]:
+            st.caption(f"👥 **{len(_rem_by_template['carole'])}** famille(s) : " + ", ".join(_rem_by_template["carole"]))
+        else:
+            st.caption("👥 Aucune famille pour ce template")
         if carole_details_rem:
             st.caption(f"📋 Détails heures Notion : **{carole_details_rem}**")
         subject_carole = st.text_input("📝 Sujet", value=carole_reminder_template["subject"], key="reminder_subject_carole")
@@ -2409,7 +2493,7 @@ Professor+
         selected_names = final_names
     
     # Charger les données TutorBird pour le matching des factures PDF
-    data = _try_load_data(ctx)
+    data = data_rem_classify or _try_load_data(ctx)
     if not data:
         st.caption("💡 Les données TutorBird ne sont pas chargées. Les factures PDF ne seront pas jointes automatiquement.")
     
@@ -2436,6 +2520,7 @@ Professor+
             result = run_send_reminders(
                 secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
                 custom_subject=subject, custom_body=body,
+                custom_subject_en=subject_en, custom_body_en=body_en,
                 selected_families=selected_names,
                 send_to_test=True, callback=callback,
                 custom_subject_carole=subject_carole, custom_body_carole=body_carole
@@ -2467,6 +2552,7 @@ Professor+
         result = run_send_reminders(
             secrets, data or {}, folder_path or "", ctx["DATA_DIR"],
             custom_subject=subject, custom_body=body,
+            custom_subject_en=subject_en, custom_body_en=body_en,
             selected_families=selected_names,
             send_to_test=False, callback=callback,
             custom_subject_carole=subject_carole, custom_body_carole=body_carole
@@ -2725,6 +2811,7 @@ def page_update(ctx):
                 status.info(m)
             
             # Calculer additional_amounts depuis les données impayées n-2
+            # Inclut montant, heures, et dates pour les lignes Notion complètes
             _update_additional_amounts = None
             _prev_unpaid_for_notion = st.session_state.get("_previous_unpaid_data")
             if _prev_unpaid_for_notion:
@@ -2733,8 +2820,21 @@ def page_update(ctx):
                     _lessons = _fdata.get("lessons", [])
                     _billable = [L for L in _lessons if L.get("attendance_status") != "AbsentNotice"]
                     _fam_total = sum(float(L.get("amount") or 0) for L in _billable)
+                    _fam_hours = sum((L.get("duration_min") or 0) / 60 for L in _billable)
+                    _fam_dates = []
+                    for L in _billable:
+                        d = L.get("date", "")
+                        if d:
+                            try:
+                                _fam_dates.append(datetime.strptime(d, "%d.%m.%Y"))
+                            except Exception:
+                                pass
                     if _fam_total > 0:
-                        _update_additional_amounts[_fid] = _fam_total
+                        _update_additional_amounts[_fid] = {
+                            "amount": _fam_total,
+                            "hours": _fam_hours,
+                            "dates": _fam_dates,
+                        }
             
             result = run_update_notion(secrets, data, ctx["BASE_DIR"], callback, no_split=effective_no_split, familles_euros=familles_euros, invoice_date_override=invoice_date_from_folder, additional_amounts=_update_additional_amounts)
             
