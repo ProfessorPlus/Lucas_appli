@@ -86,6 +86,36 @@ Professor+
     }
 
 
+def get_default_multimonth_template(month_name=None, year=None, unpaid_month_label=None):
+    """Retourne le template d'email pour les familles avec impayés de mois précédents."""
+    if not month_name:
+        now = datetime.now()
+        idx = now.month - 1
+        year = now.year
+        month_name = MONTHS_FR[idx]
+    
+    unpaid_label = unpaid_month_label or "mois précédent"
+    
+    return {
+        "subject": f"Facture(s) - Soutien scolaire - {month_name} {year} (incluant cours non réglés)",
+        "body": f"""Bonjour,
+
+J'espère que vous allez bien.
+
+Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_name} {year}.
+
+Cette facture inclut également les cours de mois précédent qui n'ont pas encore été réglés.
+
+Vous pouvez régler le montant total directement en cliquant sur le bouton "Payer en ligne" dans la facture PDF. Un seul paiement couvre l'ensemble des cours.
+
+Merci de procéder au paiement dans les plus brefs délais.
+
+Cordialement,
+Professor+
+"""
+    }
+
+
 def _collect_pdfs_recursively(invoice_folder):
     pdf_files = []
     for root, _, files in os.walk(invoice_folder):
