@@ -335,11 +335,15 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                 is_carole = False
                 is_english_fam = False
                 if data:
-                    for fam in data.values():
+                    for _fid_rem, fam in data.items():
                         fp = fam.get("parent_name", "")
                         if fp and names_match(fp, family['parent_name']):
                             # Carole Tessier uniquement
-                            if (fam.get("source") == "notion_hors_tb"
+                            _is_notion_rem = (
+                                fam.get("source") == "notion_hors_tb"
+                                or _fid_rem.startswith("notion_")
+                            )
+                            if (_is_notion_rem
                                 and "carole" in fp.lower() and "tessier" in fp.lower()
                                 and custom_subject_carole):
                                 is_carole = True

@@ -300,8 +300,13 @@ def run_send_invoices(secrets, data, invoice_folder,
 
                 # Déterminer le template: Multi-mois > Carole (notion_hors_tb) > EN > FR
                 fam_data = data.get(family.get("family_id"), {})
-                is_carole = (
+                _fam_id_send = family.get("family_id", "")
+                _is_notion_source = (
                     fam_data.get("source") == "notion_hors_tb"
+                    or _fam_id_send.startswith("notion_")
+                )
+                is_carole = (
+                    _is_notion_source
                     and normalize_ascii(fam_data.get("parent_name", "")) == normalize_ascii("Carole Tessier")
                 )
                 is_multimonth = (
