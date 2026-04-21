@@ -332,22 +332,16 @@ def run_send_reminders(secrets, data, invoice_folder, data_dir,
                 msg['To'] = recipient
                 
                 # Déterminer le template: Carole > EN > FR
-                is_carole = False
+                _parent_name_rem = family.get('parent_name', '')
+                is_carole = (
+                    "carole" in _parent_name_rem.lower() and "tessier" in _parent_name_rem.lower()
+                    and custom_subject_carole
+                )
                 is_english_fam = False
                 if data:
                     for _fid_rem, fam in data.items():
                         fp = fam.get("parent_name", "")
-                        if fp and names_match(fp, family['parent_name']):
-                            # Carole Tessier uniquement
-                            _is_notion_rem = (
-                                fam.get("source") == "notion_hors_tb"
-                                or _fid_rem.startswith("notion_")
-                            )
-                            if (_is_notion_rem
-                                and "carole" in fp.lower() and "tessier" in fp.lower()
-                                and custom_subject_carole):
-                                is_carole = True
-                            # Langue anglaise
+                        if fp and names_match(fp, _parent_name_rem):
                             lang = str(fam.get("language", "fr")).strip().lower()
                             if lang in {"anglais", "english", "en"}:
                                 is_english_fam = True

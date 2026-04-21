@@ -2012,15 +2012,8 @@ Professor+
         _fdata = data.get(_fid, {})
         _is_multi = bool(_multimonth_ids and _fid in _multimonth_ids)
         
-        # Détection Carole : source notion_hors_tb OU family_id commence par "notion_"
-        _is_notion_src = (
-            _fdata.get("source") == "notion_hors_tb"
-            or _fid.startswith("notion_")
-        )
-        _is_carole_t = (
-            _is_notion_src
-            and "carole" in _fname.lower() and "tessier" in _fname.lower()
-        )
+        # Détection Carole : par nom uniquement (template OCTOPUS toujours custom)
+        _is_carole_t = ("carole" in _fname.lower() and "tessier" in _fname.lower())
         
         # Détection anglais : depuis les données OU depuis ready_families
         _lang_t = str(_fdata.get("language") or _fam.get("language") or "fr").strip().lower()
@@ -2424,19 +2417,12 @@ Professor+
     _rem_by_template = {"fr": [], "en": [], "carole": []}
     for _fam_rem in with_email:
         _fname_rem = _fam_rem["parent_name"]
-        _is_carole_r = False
+        _is_carole_r = ("carole" in _fname_rem.lower() and "tessier" in _fname_rem.lower())
         _is_en_r = False
         if data_rem_classify:
             for _fid_r, _fd in data_rem_classify.items():
                 _fp = _fd.get("parent_name", "")
                 if _fp and _fp.lower().strip() == _fname_rem.lower().strip():
-                    _is_notion_r = (
-                        _fd.get("source") == "notion_hors_tb"
-                        or _fid_r.startswith("notion_")
-                    )
-                    if (_is_notion_r
-                        and "carole" in _fname_rem.lower() and "tessier" in _fname_rem.lower()):
-                        _is_carole_r = True
                     _lr = str(_fd.get("language", "fr")).strip().lower()
                     if _lr in {"anglais", "english", "en"}:
                         _is_en_r = True
