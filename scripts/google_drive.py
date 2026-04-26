@@ -485,6 +485,20 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
                     drive_filename = filename
                     existing = find_file(service, drive_filename, current_folder_id)
                     
+                    # Si le fichier n'existe pas par nom exact ET c'est un PDF,
+                    # chercher un ancien PDF dans le même dossier pour le remplacer
+                    # (cas régénération : date dans le nom change)
+                    old_pdf_to_replace = None
+                    if not existing and local_path.endswith('.pdf'):
+                        try:
+                            existing_files = list_files_in_folder(service, current_folder_id)
+                            old_pdfs = [f for f in existing_files if f['name'].endswith('.pdf') and f['name'] != drive_filename]
+                            if old_pdfs:
+                                old_pdf_to_replace = old_pdfs[0]
+                                print(f"   🔄 Ancien PDF trouvé: {old_pdf_to_replace['name']} → sera remplacé par {drive_filename}")
+                        except Exception:
+                            pass
+                    
                     mime_type = 'application/octet-stream'
                     if local_path.endswith('.pdf'):
                         mime_type = 'application/pdf'
@@ -494,7 +508,7 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
                     media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
                     
                     if existing:
-                        # Forcer une vraie mise à jour du contenu (pas juste metadata)
+                        # Même nom → mise à jour du contenu
                         file = service.files().update(
                             fileId=existing['id'],
                             media_body=media,
@@ -503,6 +517,15 @@ def sync_folder_to_drive(local_folder, drive_folder_name=None, parent_id=None):
                         old_size = existing.get('size', '?')
                         new_size = os.path.getsize(local_path)
                         print(f"   ✅ Mis à jour: {filename} (file_id={file.get('id')}, old_size={old_size}, new_size={new_size})")
+                    elif old_pdf_to_replace:
+                        # Nom différent mais même dossier famille → remplacer contenu + renommer
+                        file = service.files().update(
+                            fileId=old_pdf_to_replace['id'],
+                            body={'name': drive_filename},
+                            media_body=media,
+                            **_file_kwargs(),
+                        ).execute()
+                        print(f"   ✅ Remplacé: {old_pdf_to_replace['name']} → {filename} (file_id={file.get('id')})")
                     else:
                         file_metadata = {
                             'name': drive_filename,
