@@ -622,12 +622,52 @@ def page_extract(ctx):
             else:
                 amount_display = f"{result['amount']:,.2f} CHF"
             
+            # Calculer le net EUR (CA total EUR - part profs)
+            net_msg = ""
+            try:
+                from scripts.recap_profs import compute_teacher_recap, fetch_fx_rate, fetch_chf_eur_rate
+                _data_for_net = ctx["load_extracted_data"]()
+                _secrets = ctx["load_secrets"]() if callable(ctx.get("load_secrets")) else None
+                _familles_euros = ctx["load_familles_euros"]() if callable(ctx.get("load_familles_euros")) else []
+                _tarifs_speciaux = ctx["load_tarifs_speciaux"]() if callable(ctx.get("load_tarifs_speciaux")) else []
+                _extraction_end = None
+                if st.session_state.get("extract_dates"):
+                    _extraction_end = st.session_state["extract_dates"].get("end_date")
+                if _data_for_net and _secrets:
+                    _recap = compute_teacher_recap(
+                        _data_for_net, _secrets, _familles_euros, _tarifs_speciaux,
+                        extraction_end_date=_extraction_end,
+                    )
+                    _profs_total_eur = _recap.get("grand_total", 0)
+                    
+                    # Convertir le CA total en EUR
+                    _chf_eur_rate, _ = fetch_chf_eur_rate()
+                    _aed_eur_rate, _ = fetch_fx_rate("AED", "EUR")
+                    _ca_eur = 0
+                    for cur, amt in amounts_by_currency.items():
+                        cur_up = cur.upper()
+                        if cur_up == "EUR":
+                            _ca_eur += amt
+                        elif cur_up == "CHF":
+                            _ca_eur += amt * _chf_eur_rate
+                        elif cur_up == "AED":
+                            _ca_eur += amt * _aed_eur_rate
+                    
+                    _net_eur = _ca_eur - _profs_total_eur
+                    net_msg = f"\n            - 💶 **Net : {_net_eur:,.2f} €** (CA {_ca_eur:,.2f} € − Profs {_profs_total_eur:,.2f} €)"
+            except Exception as _e:
+                print(f"⚠️ Erreur calcul net dans extraction: {_e}")
+            
             st.success(f"""
             ✅ **Extraction terminée !**
             - 📁 **{result['families']}** familles
             - 📚 **{result['lessons']}** leçons
-            - 💰 **{amount_display}** total{notion_msg}
+            - 💰 **{amount_display}** total{notion_msg}{net_msg}
             """)
+            
+            if st.button("🏠 Retour à l'accueil", key="extract_home_btn"):
+                st.session_state.current_page = "accueil"
+                st.rerun()
         else:
             st.error(f"❌ Erreur : {result['error']}")
 
