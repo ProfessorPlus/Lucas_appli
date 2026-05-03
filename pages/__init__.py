@@ -626,21 +626,26 @@ def page_extract(ctx):
                 for _fid, _fam in _data_for_split.items():
                     _parent = _fam.get("parent_name", "")
                     _is_euro_family = _parent.lower().strip() in _euro_parents_norm
-                    _fam_default_currency = (_fam.get("currency") or "chf").upper()
                     
                     # Itérer leçon par leçon pour avoir la vraie devise
                     for _lesson in _fam.get("lessons", []):
                         _amt = float(_lesson.get("amount") or 0)
                         if _amt == 0:
                             continue
-                        # Devise de la leçon : Notion source > devise famille > override euros
-                        _lesson_cur = (_lesson.get("notion_devise_client") or "").upper()
-                        if not _lesson_cur:
-                            # Leçon TutorBird : CHF par défaut, EUR si famille marquée euros
-                            if _is_euro_family:
-                                _lesson_cur = "EUR"
-                            else:
-                                _lesson_cur = _fam_default_currency
+                        
+                        # Détection devise leçon par leçon :
+                        # 1. Si la leçon vient de Notion (source notion_hors_tb) → notion_devise_client
+                        # 2. Sinon (leçon TutorBird) → CHF par défaut, EUR si famille dans familles_euros.yaml
+                        _lesson_source = _lesson.get("source", "")
+                        _notion_cur = _lesson.get("notion_devise_client", "")
+                        
+                        if _lesson_source == "notion_hors_tb" or _notion_cur:
+                            # Leçon Notion : utiliser notion_devise_client
+                            _lesson_cur = (_notion_cur or "EUR").upper()
+                        else:
+                            # Leçon TutorBird : CHF par défaut, EUR si marquée euros
+                            _lesson_cur = "EUR" if _is_euro_family else "CHF"
+                        
                         amounts_by_currency[_lesson_cur] = amounts_by_currency.get(_lesson_cur, 0) + _amt
             except Exception as _e:
                 print(f"⚠️ Erreur recalcul amounts_by_currency: {_e}")
