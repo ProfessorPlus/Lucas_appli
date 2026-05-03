@@ -706,6 +706,56 @@ def page_extract(ctx):
             - 💰 **{amount_display}** total{notion_msg}{net_msg}
             """)
             
+            # Détail famille par famille pour comprendre d'où viennent les montants
+            with st.expander("🔍 Détail par famille (vérification devise)", expanded=False):
+                try:
+                    _detail_rows = []
+                    for _fid, _fam in (_data_for_split or {}).items():
+                        _parent = _fam.get("parent_name", "")
+                        _is_euro_family = _parent.lower().strip() in _euro_parents_norm
+                        
+                        _eur_part = 0.0
+                        _chf_part = 0.0
+                        _aed_part = 0.0
+                        
+                        for _lesson in _fam.get("lessons", []):
+                            _amt = float(_lesson.get("amount") or 0)
+                            if _amt == 0:
+                                continue
+                            _src = _lesson.get("source", "")
+                            _ncur = _lesson.get("notion_devise_client", "")
+                            
+                            if _src == "notion_hors_tb" or _ncur:
+                                _cur = (_ncur or "EUR").upper()
+                            else:
+                                _cur = "EUR" if _is_euro_family else "CHF"
+                            
+                            if _cur == "EUR":
+                                _eur_part += _amt
+                            elif _cur == "CHF":
+                                _chf_part += _amt
+                            elif _cur == "AED":
+                                _aed_part += _amt
+                        
+                        if _eur_part or _chf_part or _aed_part:
+                            _src_tag = ""
+                            if _is_euro_family:
+                                _src_tag = "💶 marquée EUR (familles_euros.yaml)"
+                            
+                            _detail_rows.append({
+                                "Famille": _parent,
+                                "EUR": f"{_eur_part:,.2f}" if _eur_part else "—",
+                                "CHF": f"{_chf_part:,.2f}" if _chf_part else "—",
+                                "AED": f"{_aed_part:,.2f}" if _aed_part else "—",
+                                "Note": _src_tag,
+                            })
+                    
+                    if _detail_rows:
+                        st.dataframe(_detail_rows, hide_index=True, use_container_width=True)
+                        st.caption(f"💡 Familles dans `familles_euros.yaml` : **{len(_euro_parents_norm)}**")
+                except Exception as _e:
+                    st.caption(f"⚠️ Erreur affichage détail: {_e}")
+            
             if st.button("🏠 Retour à l'accueil", key="extract_home_btn"):
                 st.session_state.current_page = "accueil"
                 st.rerun()
