@@ -706,10 +706,10 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 
                 # Générer le PDF
                 # Facture spéciale OCTOPUS uniquement pour Carole Tessier
-                is_notion_custom = (
-                    fam.get("source") == "notion_hors_tb"
-                    and normalize(parent_name) == normalize("Carole Tessier")
-                )
+                # (par nom uniquement — robuste à la fusion Notion↔TutorBird qui
+                #  réécrit le source et inverse l'ordre prénom/nom)
+                _pname_lower = (parent_name or "").lower()
+                is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,
