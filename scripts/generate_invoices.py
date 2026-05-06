@@ -612,7 +612,12 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or "Parent"
             update(progress, f"📄 {parent_name} ({current}/{total_families})")
-            
+
+            # Détection Carole Tessier (template OCTOPUS) — par nom uniquement,
+            # robuste à la fusion Notion↔TutorBird (qui inverse prénom/nom et écrase source).
+            _pname_lower = (parent_name or "").lower()
+            is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
+
             currency = "EUR" if fam_id in families_in_euros else "CHF"
             # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
             fam_currency = (fam.get("currency") or "").upper()
@@ -627,7 +632,12 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     cours_non_factures += 1
                     continue
                 lessons_filtered.append(L)
-            
+
+            # Pour Carole (OCTOPUS) : ne retenir que les leçons Notion (Profs hors TutorBird)
+            # → le total reflète uniquement les heures saisies dans Notion.
+            if is_notion_custom:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             if not lessons_filtered:
                 continue
             
@@ -704,12 +714,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
                 output_path = os.path.join(fam_base_dir, filename)
                 
-                # Générer le PDF
-                # Facture spéciale OCTOPUS uniquement pour Carole Tessier
-                # (par nom uniquement — robuste à la fusion Notion↔TutorBird qui
-                #  réécrit le source et inverse l'ordre prénom/nom)
-                _pname_lower = (parent_name or "").lower()
-                is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
+                # Générer le PDF (is_notion_custom calculé en amont)
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,
