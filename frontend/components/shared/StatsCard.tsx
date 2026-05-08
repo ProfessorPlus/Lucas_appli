@@ -25,6 +25,11 @@ interface StatsCardProps {
   label: string;
   value: ReactNode;
   hint?: string;
+  /**
+   * Optional emphasized footer line (used e.g. to show "Net" amount below the
+   * gross total in the À facturer card). Rendered green by default.
+   */
+  footer?: ReactNode;
   icon?: ReactNode;
   tone?: Tone;
   trend?: { value: number; positive?: boolean };
@@ -36,6 +41,7 @@ export function StatsCard({
   label,
   value,
   hint,
+  footer,
   icon,
   tone = "primary",
   trend,
@@ -93,6 +99,11 @@ export function StatsCard({
           {value}
         </div>
         {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+        {footer && (
+          <div className="mt-3 border-t border-border/60 pt-2 text-sm font-semibold text-success">
+            {footer}
+          </div>
+        )}
       </div>
     </motion.div>
   );

@@ -160,18 +160,20 @@ export default function ShowcasePage() {
             label="À facturer"
             value={
               <MultiCurrencyTotal
-                size="lg"
-                amounts={{ EUR: 3658.32, CHF: 6445.0, AED: 1321.8 }}
+                size="md"
+                amounts={{ EUR: 3658, CHF: 6108, AED: 1322 }}
               />
             }
+            hint="≈ 10 595 € brut"
+            footer="Net : 5 154 €"
             icon={<Wallet className="h-5 w-5" />}
             tone="warning"
             delay={0.1}
           />
           <StatsCard
             label="Net EUR"
-            value="7,234.18 €"
-            hint="CA 10,892 € − Profs 3,658 €"
+            value="5 154 €"
+            hint="CA 10 595 € − Profs 5 441 €"
             icon={<TrendingUp className="h-5 w-5" />}
             tone="emerald"
             trend={{ value: 12.4, positive: true }}

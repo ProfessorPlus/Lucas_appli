@@ -176,35 +176,35 @@ def page_accueil(ctx):
             else:
                 total_chf += amount
     
+    # ====================================================================
+    # CA total équivalent EUR — UNE seule source de vérité pour À facturer + Net EUR
+    # (Bug historique : Net EUR ignorait AED → divergence avec À facturer.)
+    # ====================================================================
+    ca_total_eur = None
+    try:
+        from scripts.recap_profs import fetch_chf_eur_rate, fetch_fx_rate
+        _eur_equiv = total_eur
+        if total_chf > 0:
+            _chf_rate, _ = fetch_chf_eur_rate()
+            _eur_equiv += total_chf * _chf_rate
+        if total_aed > 0:
+            _aed_rate, _ = fetch_fx_rate("AED", "EUR")
+            _eur_equiv += total_aed * _aed_rate
+        ca_total_eur = _eur_equiv
+    except Exception as _e:
+        print(f"⚠️ Erreur calcul CA EUR équivalent: {_e}")
+
     has_multiple = sum(1 for t in (total_eur, total_chf, total_aed) if t > 0) > 1
     if has_multiple:
-        # Calculer le total EUR équivalent
-        try:
-            from scripts.recap_profs import fetch_chf_eur_rate, fetch_fx_rate
-            chf_eur_rate, _ = fetch_chf_eur_rate()
-            aed_eur_rate = 0
-            if total_aed > 0:
-                aed_eur_rate, _ = fetch_fx_rate("AED", "EUR")
-            total_eur_equiv = total_eur + (total_chf * chf_eur_rate) + (total_aed * aed_eur_rate)
-            parts = []
-            if total_chf > 0:
-                parts.append(f"{total_chf:,.0f} CHF")
-            if total_eur > 0:
-                parts.append(f"{total_eur:,.0f} €")
-            if total_aed > 0:
-                parts.append(f"{total_aed:,.0f} AED")
-            amount_display = " + ".join(parts)
-            amount_sub = f"≈ {total_eur_equiv:,.0f} € total"
-        except Exception:
-            parts = []
-            if total_chf > 0:
-                parts.append(f"{total_chf:,.0f} CHF")
-            if total_eur > 0:
-                parts.append(f"{total_eur:,.0f} €")
-            if total_aed > 0:
-                parts.append(f"{total_aed:,.0f} AED")
-            amount_display = " + ".join(parts)
-            amount_sub = ""
+        parts = []
+        if total_chf > 0:
+            parts.append(f"{total_chf:,.0f} CHF")
+        if total_eur > 0:
+            parts.append(f"{total_eur:,.0f} €")
+        if total_aed > 0:
+            parts.append(f"{total_aed:,.0f} AED")
+        amount_display = " + ".join(parts)
+        amount_sub = f"≈ {ca_total_eur:,.0f} € total" if ca_total_eur else ""
         amount_size = "font-size: 1.1rem;"
     elif total_eur > 0:
         amount_display = f"{total_eur:,.0f} €"
@@ -218,14 +218,15 @@ def page_accueil(ctx):
         amount_display = f"{total_chf:,.0f} CHF"
         amount_sub = ""
         amount_size = ""
-    
+
     # Calculer le net EUR (CA total EUR - part profs)
+    # Réutilise ca_total_eur calculé ci-dessus pour garantir cohérence avec "À facturer".
     net_eur_display = "—"
     net_eur_sub = ""
+    net_amount_inline = ""  # ligne supplémentaire dans la card À facturer
     try:
-        if data and secrets:
+        if data and secrets and ca_total_eur is not None:
             tarifs_speciaux = ctx["load_tarifs_speciaux"]() if callable(ctx.get("load_tarifs_speciaux")) else []
-            # Déterminer la date d'extraction pour le FX
             extraction_end = None
             if st.session_state.get("extract_dates"):
                 extraction_end = st.session_state["extract_dates"].get("end_date")
@@ -234,20 +235,10 @@ def page_accueil(ctx):
                 extraction_end_date=extraction_end,
             )
             profs_total_eur = recap.get("grand_total", 0)
-            # total_eur_equiv est déjà calculé plus haut (ou on le recalcule)
-            if total_eur > 0 and total_chf > 0:
-                from scripts.recap_profs import fetch_chf_eur_rate as _fetch_rate
-                _rate, _ = _fetch_rate()
-                ca_total_eur = total_eur + (total_chf * _rate)
-            elif total_eur > 0:
-                ca_total_eur = total_eur
-            else:
-                from scripts.recap_profs import fetch_chf_eur_rate as _fetch_rate
-                _rate, _ = _fetch_rate()
-                ca_total_eur = total_chf * _rate
             net_eur = ca_total_eur - profs_total_eur
             net_eur_display = f"{net_eur:,.0f} €"
             net_eur_sub = f"CA {ca_total_eur:,.0f} € − Profs {profs_total_eur:,.0f} €"
+            net_amount_inline = f"Net : {net_eur:,.0f} €"
     except Exception as _e:
         print(f"⚠️ Erreur calcul net EUR: {_e}")
 
@@ -258,7 +249,8 @@ def page_accueil(ctx):
         st.markdown(f'<div class="stat-card"><div class="stat-label">👨‍👩‍👧 Familles</div><div class="stat-value">{nb_families}</div></div>', unsafe_allow_html=True)
     with col3:
         sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{amount_sub}</div>' if amount_sub else ""
-        st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div>{sub_html}</div>', unsafe_allow_html=True)
+        net_inline_html = f'<div style="font-size: 0.8rem; color: #28a745; margin-top: 4px; font-weight: 600;">{net_amount_inline}</div>' if net_amount_inline else ""
+        st.markdown(f'<div class="stat-card"><div class="stat-label">💰 À facturer</div><div class="stat-value" style="{amount_size}">{amount_display}</div>{sub_html}{net_inline_html}</div>', unsafe_allow_html=True)
     with col4:
         net_sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{net_eur_sub}</div>' if net_eur_sub else ""
         st.markdown(f'<div class="stat-card"><div class="stat-label">💶 Mon net EUR</div><div class="stat-value" style="color: #28a745;">{net_eur_display}</div>{net_sub_html}</div>', unsafe_allow_html=True)

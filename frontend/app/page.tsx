@@ -19,11 +19,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 // Données fake — seront remplacées par fetch /api/dashboard/summary
+// Exemple aligné sur Avril 2026 (Streamlit) pour comparaison côte à côte.
 const FAKE = {
   professors: 12,
   families: 47,
-  toBill: { EUR: 3658.32, CHF: 6445.0, AED: 1321.8 },
-  netEur: 7234.18,
+  toBill: { EUR: 3658, CHF: 6108, AED: 1322 },
+  caTotalEur: 10595, // CHF + EUR + AED convertis (Frankfurter)
+  profsEur: 5441,
+  netEur: 5154, // CA total EUR − Profs EUR (CORRIGÉ — incluait pas AED avant)
   trend: 12.4,
 };
 
@@ -64,15 +67,17 @@ export default function HomePage() {
         />
         <StatsCard
           label="À facturer"
-          value={<MultiCurrencyTotal size="lg" amounts={FAKE.toBill} />}
+          value={<MultiCurrencyTotal size="md" amounts={FAKE.toBill} />}
+          hint={`≈ ${FAKE.caTotalEur.toLocaleString("fr-FR")} € brut`}
+          footer={`Net : ${FAKE.netEur.toLocaleString("fr-FR")} €`}
           icon={<Wallet className="h-5 w-5" />}
           tone="warning"
           delay={0.1}
         />
         <StatsCard
           label="Net EUR"
-          value={`${FAKE.netEur.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €`}
-          hint="CA EUR − Profs EUR"
+          value={`${FAKE.netEur.toLocaleString("fr-FR")} €`}
+          hint={`CA ${FAKE.caTotalEur.toLocaleString("fr-FR")} € − Profs ${FAKE.profsEur.toLocaleString("fr-FR")} €`}
           icon={<TrendingUp className="h-5 w-5" />}
           tone="emerald"
           trend={{ value: FAKE.trend, positive: true }}
