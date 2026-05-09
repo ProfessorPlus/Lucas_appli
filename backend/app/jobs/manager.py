@@ -1,4 +1,8 @@
-"""SQLite-backed job manager for fire-and-poll long-running tasks."""
+"""SQLite-backed job manager for fire-and-poll long-running tasks.
+
+Thread-safe SSE notifications via call_soon_threadsafe — long-running scripts
+run in a threadpool, so log/progress callbacks may fire from non-loop threads.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +37,12 @@ class JobManager:
         self.db_path = db_path or settings.jobs_db_path
         self._lock = threading.Lock()
         self._listeners: dict[str, list[asyncio.Queue[str]]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._init_db()
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Captured at startup. Required for thread-safe SSE notifications."""
+        self._loop = loop
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -129,7 +138,7 @@ class JobManager:
                     job_id,
                 ),
             )
-        self._notify(job_id, json.dumps({"type": "status", "status": status}))
+        self._notify(job_id, json.dumps({"type": "status", "status": status, "error": error}))
 
     async def run(self, job_id: str, func: JobFunc) -> None:
         ctx = JobContext(job_id=job_id, _manager=self)
@@ -157,11 +166,22 @@ class JobManager:
             listeners.remove(queue)
 
     def _notify(self, job_id: str, payload: str) -> None:
-        for queue in self._listeners.get(job_id, []):
-            try:
-                queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass
+        listeners = self._listeners.get(job_id, [])
+        if not listeners:
+            return
+        loop = self._loop
+        for queue in listeners:
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(_safe_put, queue, payload)
+            else:
+                _safe_put(queue, payload)
+
+
+def _safe_put(queue: asyncio.Queue[str], payload: str) -> None:
+    try:
+        queue.put_nowait(payload)
+    except asyncio.QueueFull:
+        pass
 
 
 _manager_instance: JobManager | None = None
