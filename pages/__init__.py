@@ -3142,7 +3142,9 @@ def page_update(ctx):
                     progress.progress(p)
                     status.info(m)
 
-                # Appel de la fonction de mise à jour sélective
+                # Appel de la fonction de mise à jour sélective.
+                # On passe effective_no_split (= is_no_split or skip_prof_subpages)
+                # pour rester cohérent avec run_update_notion ligne 2960.
                 result = run_update_notion_selective(
                     secrets,
                     data,
@@ -3150,7 +3152,7 @@ def page_update(ctx):
                     selected_family_ids,
                     selected_teachers,
                     callback,
-                    no_split=is_no_split
+                    no_split=effective_no_split
                 )
                 
                 if result["success"]:

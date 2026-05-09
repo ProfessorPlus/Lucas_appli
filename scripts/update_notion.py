@@ -969,27 +969,36 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                             break
                     
                     if matched_family_id:
-                        # Scanner les PDFs dans ce dossier
+                        # Scanner les PDFs dans ce dossier.
+                        # Le format de nommage est : Facture_<date>_<suffix>.pdf
+                        #   - mode classique : <suffix> = Prof_Name (un PDF par prof)
+                        #   - mode no_split  : <suffix> = Family_Name (un PDF par famille)
+                        # Plutôt que de se fier au flag no_split (qui peut être obsolète
+                        # par rapport aux vrais PDFs sur Drive), on auto-détecte en
+                        # comparant le suffixe au nom de la famille.
+                        family_norm = normalize_for_match(matched_family_name)
                         for pdf_file in os.listdir(folder_path):
                             if not pdf_file.lower().endswith(".pdf"):
                                 continue
 
-                            # Format: Facture_2026-02-02_<suffix>.pdf
-                            #   - mode classique : <suffix> = Prof_Name (un PDF par prof)
-                            #   - mode no_split  : <suffix> = Family_Name (un PDF par famille)
                             parts = pdf_file.replace(".pdf", "").split("_")
                             if len(parts) < 3:
                                 continue
 
-                            # Date depuis parts[1]
                             try:
                                 file_date = datetime.strptime(parts[1], "%Y-%m-%d")
                             except Exception:
                                 file_date = datetime.min
 
-                            if no_split:
-                                # Un seul PDF par famille → on l'attribue à tous les profs
-                                # sélectionnés de cette famille (ils partagent la facture).
+                            suffix = " ".join(parts[2:])
+                            suffix_norm = normalize_for_match(suffix)
+
+                            # Si le suffixe matche le nom de la famille → no_split
+                            # (un seul PDF par famille, partagé par tous les profs sélectionnés).
+                            family_match_score = SequenceMatcher(None, suffix_norm, family_norm).ratio()
+                            is_no_split_pdf = family_match_score > 0.85 or suffix_norm == family_norm
+
+                            if is_no_split_pdf:
                                 for sel_teacher in selected_teachers:
                                     invoices_found.append({
                                         "family_id": matched_family_id,
@@ -999,14 +1008,11 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                                     })
                                 continue
 
-                            # Mode classique : extraire le prof depuis le nom de fichier
-                            teacher_from_file = " ".join(parts[2:])
-                            teacher_norm = normalize_for_match(teacher_from_file)
-
+                            # Sinon, mode classique : le suffixe est un nom de prof
                             is_selected = False
                             matched_teacher = None
                             for sel_teacher, sel_norm in zip(selected_teachers, selected_teachers_norm):
-                                score = SequenceMatcher(None, teacher_norm, sel_norm).ratio()
+                                score = SequenceMatcher(None, suffix_norm, sel_norm).ratio()
                                 if score > 0.7:
                                     is_selected = True
                                     matched_teacher = sel_teacher
