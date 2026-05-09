@@ -409,7 +409,14 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
             
             lessons = fam.get("lessons", [])
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
-            
+
+            # Carole Tessier (template OCTOPUS) : seulement les leçons Notion
+            # (Profs hors TutorBird) — sinon les profs/heures TutorBird parasitent
+            # la ligne Notion (ex: Imane Berrai à 0h apparaît à tort).
+            _pname_lower = (parent_name or "").lower()
+            if "carole" in _pname_lower and "tessier" in _pname_lower:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             if not lessons_filtered:
                 no_lessons += 1
                 continue
