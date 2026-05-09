@@ -3048,14 +3048,24 @@ def page_update(ctx):
             
             if selected_family_ids:
                 # Récupérer TOUS les profs de ces familles automatiquement
+                # - on ignore les leçons à 0h/0€ (pas de prof à créditer)
+                # - pour Carole (OCTOPUS) : on ne garde que les leçons Notion (Profs hors TB)
                 for fam_id in selected_family_ids:
                     fam = data.get(fam_id, {})
                     lessons = fam.get("lessons", [])
+                    _pname_lower = (fam.get("parent_name") or "").lower()
+                    _is_carole_oct = ("carole" in _pname_lower and "tessier" in _pname_lower)
                     for L in lessons:
+                        if _is_carole_oct and L.get("source") != "notion_hors_tb":
+                            continue
+                        duration = float(L.get("duration_min") or 0)
+                        amount = float(L.get("amount") or 0)
+                        if duration <= 0 and amount <= 0:
+                            continue
                         teacher = L.get("teacher", "")
                         if teacher and teacher not in selected_teachers:
                             selected_teachers.append(teacher)
-                
+
                 st.info(f"📊 **{len(selected_family_ids)}** famille(s) sélectionnée(s) → **{len(selected_teachers)}** professeur(s) concerné(s)")
         
         # ===========================

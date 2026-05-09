@@ -949,38 +949,54 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     if matched_family_id:
                         # Scanner les PDFs dans ce dossier
                         for pdf_file in os.listdir(folder_path):
-                            if pdf_file.lower().endswith(".pdf"):
-                                # Extraire le nom du prof du fichier
-                                # Format: Facture_2026-02-02_Prof_Name.pdf
-                                parts = pdf_file.replace(".pdf", "").split("_")
-                                if len(parts) >= 3:
-                                    teacher_from_file = " ".join(parts[2:])
-                                    teacher_norm = normalize_for_match(teacher_from_file)
-                                    
-                                    # Vérifier si ce prof est dans la sélection
-                                    is_selected = False
-                                    matched_teacher = None
-                                    for sel_teacher, sel_norm in zip(selected_teachers, selected_teachers_norm):
-                                        score = SequenceMatcher(None, teacher_norm, sel_norm).ratio()
-                                        if score > 0.7:
-                                            is_selected = True
-                                            matched_teacher = sel_teacher
-                                            break
-                                    
-                                    if is_selected:
-                                        # Extraire la date du fichier
-                                        try:
-                                            date_part = parts[1]
-                                            file_date = datetime.strptime(date_part, "%Y-%m-%d")
-                                        except:
-                                            file_date = datetime.min
-                                        
-                                        invoices_found.append({
-                                            "family_id": matched_family_id,
-                                            "family_name": matched_family_name,
-                                            "teacher": matched_teacher,
-                                            "file_date": file_date,
-                                        })
+                            if not pdf_file.lower().endswith(".pdf"):
+                                continue
+
+                            # Format: Facture_2026-02-02_<suffix>.pdf
+                            #   - mode classique : <suffix> = Prof_Name (un PDF par prof)
+                            #   - mode no_split  : <suffix> = Family_Name (un PDF par famille)
+                            parts = pdf_file.replace(".pdf", "").split("_")
+                            if len(parts) < 3:
+                                continue
+
+                            # Date depuis parts[1]
+                            try:
+                                file_date = datetime.strptime(parts[1], "%Y-%m-%d")
+                            except Exception:
+                                file_date = datetime.min
+
+                            if no_split:
+                                # Un seul PDF par famille → on l'attribue à tous les profs
+                                # sélectionnés de cette famille (ils partagent la facture).
+                                for sel_teacher in selected_teachers:
+                                    invoices_found.append({
+                                        "family_id": matched_family_id,
+                                        "family_name": matched_family_name,
+                                        "teacher": sel_teacher,
+                                        "file_date": file_date,
+                                    })
+                                continue
+
+                            # Mode classique : extraire le prof depuis le nom de fichier
+                            teacher_from_file = " ".join(parts[2:])
+                            teacher_norm = normalize_for_match(teacher_from_file)
+
+                            is_selected = False
+                            matched_teacher = None
+                            for sel_teacher, sel_norm in zip(selected_teachers, selected_teachers_norm):
+                                score = SequenceMatcher(None, teacher_norm, sel_norm).ratio()
+                                if score > 0.7:
+                                    is_selected = True
+                                    matched_teacher = sel_teacher
+                                    break
+
+                            if is_selected:
+                                invoices_found.append({
+                                    "family_id": matched_family_id,
+                                    "family_name": matched_family_name,
+                                    "teacher": matched_teacher,
+                                    "file_date": file_date,
+                                })
         
         update(15, f"📄 {len(invoices_found)} facture(s) trouvée(s)")
         
@@ -1098,10 +1114,17 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             fam_id, teacher = key
             fam = data.get(fam_id, {})
             lessons = fam.get("lessons", [])
-            
+
             # Filtrer les absences
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
-            
+
+            # Carole Tessier (OCTOPUS) : restreindre aux leçons Notion uniquement,
+            # cohérent avec generate_invoices.py / create_payment_links_no_split.py /
+            # run_update_notion. Sinon les éventuelles leçons TB parasitent le total.
+            _pname_lower = (fam.get("parent_name") or "").lower()
+            if "carole" in _pname_lower and "tessier" in _pname_lower:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             # Calculer le montant pour ce prof
             teacher_norm = normalize_for_match(teacher)
             teacher_total = 0
