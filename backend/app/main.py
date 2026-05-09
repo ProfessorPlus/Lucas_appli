@@ -1,4 +1,16 @@
 import asyncio
+import sys
+
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 which raises
+# UnicodeEncodeError on the emojis used in the legacy scripts/ logs (✅ ⚠️ ❌)
+# and crashes endpoints with HTTP 500. Must run before any module that may print.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # pragma: no cover
+            pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

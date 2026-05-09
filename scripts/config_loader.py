@@ -19,7 +19,34 @@ Usage:
 
 import os
 import io
-import streamlit as st
+
+# Streamlit is optional: this module is also imported by the FastAPI backend
+# where streamlit is not installed. We shim `st` so `st.secrets[...]` lookups
+# return nothing and the code falls through to local-file loading.
+try:
+    import streamlit as st  # type: ignore[import-not-found]
+    HAS_STREAMLIT = True
+except ImportError:  # pragma: no cover — non-Streamlit context (FastAPI, scripts CLI)
+    HAS_STREAMLIT = False
+
+    class _StSecretsShim:
+        def get(self, key, default=None):
+            return default
+
+        def __contains__(self, key):
+            return False
+
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+    class _StShim:
+        secrets = _StSecretsShim()
+
+        @staticmethod
+        def toast(*_args, **_kwargs):  # used elsewhere in the codebase
+            return None
+
+    st = _StShim()  # type: ignore[assignment]
 
 try:
     import yaml
@@ -33,12 +60,17 @@ except ImportError:
 # ===========================
 
 def is_streamlit_cloud():
-    """Détecte si on est sur Streamlit Cloud."""
+    """Détecte si on est sur Streamlit Cloud.
+
+    Note: la condition cwd-based historique (`not os.path.exists('config/secrets.yaml')`)
+    a été retirée — elle renvoyait `True` quand l'app était lancée depuis un
+    sous-dossier (ex: backend/), ce qui forçait un load Drive impossible. Les
+    env-vars Streamlit Cloud + le path `/mount/src` sont des signaux fiables.
+    """
     return (
-        os.environ.get("STREAMLIT_SHARING_MODE") == "true" or
-        os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true" or
-        os.path.exists("/mount/src") or
-        not os.path.exists("secrets.yaml") and not os.path.exists("config/secrets.yaml")
+        os.environ.get("STREAMLIT_SHARING_MODE") == "true"
+        or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
+        or os.path.exists("/mount/src")
     )
 
 
