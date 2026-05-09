@@ -678,15 +678,37 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
         selected_teachers: Liste des noms de profs à mettre à jour
         callback: Fonction callback(progress, message)
         no_split: Si True, pas de mise à jour des sous-pages profs
-    
+
     Returns:
         dict: {"success": bool, "rows_updated": int, "subpages_updated": int, ...}
     """
-    
+
     def update(progress, message):
         if callback:
             callback(progress, message)
-    
+
+    # ===========================
+    # GARDE-FOU AVANT TOUT APPEL RÉSEAU :
+    # invoice_folder_path doit exister localement.
+    # Streamlit Cloud wipe /tmp à chaque redéploiement → l'appelant doit
+    # re-télécharger depuis Drive avant. Ici on échoue proprement plutôt
+    # que de laisser os.path.exists() exploser sur None.
+    # ===========================
+    if not invoice_folder_path:
+        return {
+            "success": False,
+            "error": "Dossier de factures non spécifié (invoice_folder_path est vide). "
+                     "Sur Streamlit Cloud, télécharge d'abord le dossier depuis Drive "
+                     "puis relance l'opération.",
+        }
+    if not os.path.exists(invoice_folder_path):
+        return {
+            "success": False,
+            "error": f"Dossier de factures introuvable en local : {invoice_folder_path}. "
+                     f"Sur Streamlit Cloud, /tmp est vidé à chaque redéploiement — "
+                     f"il faut re-télécharger depuis Drive.",
+        }
+
     try:
         NOTION_TOKEN = secrets["notion"]["token"]
         DB_PAIEMENTS = secrets["notion"]["paiements_database_id"]
@@ -910,12 +932,12 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             return len(completed)
         
         update(5, "📁 Analyse du dossier de factures...")
-        
+
         # ===========================
         # ÉTAPE 1: Scanner les factures du dossier
         # ===========================
         invoices_found = []
-        
+
         selected_teachers_norm = [normalize_for_match(t) for t in selected_teachers]
         
         # Récupérer les noms des familles sélectionnées

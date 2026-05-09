@@ -3121,18 +3121,32 @@ def page_update(ctx):
             """)
             
             if st.button("🔄 Mettre à jour les lignes sélectionnées", type="primary", width="stretch", key="update_selective_notion"):
+                # Sur Streamlit Cloud, /tmp est vidé à chaque redéploiement → si le
+                # dossier de factures n'existe plus en local, le télécharger d'abord
+                # depuis Drive (sinon run_update_notion_selective plante sur None).
+                folder_path_used = latest.get("path")
+                if not folder_path_used or not os.path.exists(folder_path_used):
+                    with st.spinner(f"📥 Téléchargement du dossier '{latest.get('name', '')}' depuis Drive..."):
+                        dl = load_invoice_folder(latest.get("year"), latest.get("month"))
+                    if dl.get("success"):
+                        folder_path_used = dl.get("local_path")
+                        st.caption(f"📥 Dossier resynchronisé depuis Drive ({dl.get('downloaded', 0)} fichier(s))")
+                    else:
+                        st.error(f"❌ Impossible de récupérer le dossier depuis Drive : {dl.get('error', 'erreur inconnue')}")
+                        st.stop()
+
                 progress = st.progress(0)
                 status = st.empty()
-                
+
                 def callback(p, m):
                     progress.progress(p)
                     status.info(m)
-                
+
                 # Appel de la fonction de mise à jour sélective
                 result = run_update_notion_selective(
-                    secrets, 
-                    data, 
-                    latest["path"],
+                    secrets,
+                    data,
+                    folder_path_used,
                     selected_family_ids,
                     selected_teachers,
                     callback,
