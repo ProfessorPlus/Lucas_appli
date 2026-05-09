@@ -1157,12 +1157,16 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             teacher_norm = normalize_for_match(teacher)
             teacher_total = 0
             teacher_hours = 0
-            
+            matched_students = []
+
             for L in lessons_filtered:
                 if SequenceMatcher(None, normalize_for_match(L.get("teacher", "")), teacher_norm).ratio() > 0.7:
                     teacher_total += float(L.get("amount", 0) or 0)
                     teacher_hours += (L.get("duration_min") or 0) / 60
-            
+                    student = (L.get("student") or "").strip()
+                    if student and student not in matched_students:
+                        matched_students.append(student)
+
             if teacher_total > 0:
                 family_totals[fam_id]["amount"] += teacher_total
                 family_totals[fam_id]["hours"] += teacher_hours
@@ -1173,6 +1177,11 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     "hours": teacher_hours,
                     "date_cours": inv["file_date"].strftime("%Y-%m-%d") if inv["file_date"] != datetime.min else None
                 })
+                # Élèves des leçons matchées (pour rafraîchir Élève sur Carole)
+                existing_students = family_totals[fam_id].setdefault("students", [])
+                for s in matched_students:
+                    if s not in existing_students:
+                        existing_students.append(s)
         
         total_families = len(family_totals)
         current = 0
@@ -1197,7 +1206,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             
             if row:
                 page_id = row["id"]
-                
+
                 # Mettre à jour la ligne famille
                 properties = {
                     amount_prop_name: {"number": round(totals["amount"], 2)},
@@ -1205,7 +1214,22 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     # Marquer que la facture a été modifiée avec la date de régénération
                     "Invoice Date modified": {"date": {"start": datetime.today().strftime("%Y-%m-%d")}},
                 }
-                
+
+                # Carole Tessier (OCTOPUS) : rafraîchir aussi Professeur et Élève
+                # car la première écriture (run_update_notion avant fix Carole)
+                # contient des profs parasites (Imane Berrai 0h, "Tessier" en élève).
+                # On NE le fait PAS pour les autres familles : si l'utilisateur a
+                # sélectionné un sous-ensemble de profs, on n'écraserait pas les
+                # autres profs de la famille.
+                _fname_lower = (family_name or "").lower()
+                if "carole" in _fname_lower and "tessier" in _fname_lower:
+                    profs_list = [t["teacher"] for t in totals.get("teachers", []) if t.get("teacher")]
+                    if profs_list:
+                        properties["Professeur"] = {"rich_text": [{"text": {"content": ", ".join(profs_list)}}]}
+                    students_list = totals.get("students", [])
+                    if students_list:
+                        properties["Élève"] = {"rich_text": [{"text": {"content": ", ".join(students_list)}}]}
+
                 result = notion_request("PATCH", f"pages/{page_id}", {"properties": properties})
                 
                 if result:
