@@ -4310,3 +4310,461 @@ def page_profs(ctx):
                 mime="application/pdf",
                 key="dl_pdf_final",
             )
+
+
+# ============================================================================
+# PAGE : ÉDITEUR DE FACTURE
+# ============================================================================
+
+def _find_fam_id_for_folder(data, folder_name):
+    """Devine le family_id correspondant à un nom de sous-dossier."""
+    if not data:
+        return None
+    norm = (folder_name or "").lower().replace("_", " ").strip()
+    for fid, fam in data.items():
+        pn = (fam.get("parent_name") or "").lower().strip()
+        if pn and (pn == norm or pn in norm or norm in pn):
+            return fid
+    return None
+
+
+def _empty_edit_fields():
+    return {
+        "parent_name": "",
+        "billing_address": "",
+        "parent_email": "",
+        "invoice_date": datetime.today().date(),
+        "invoice_number": "",
+        "currency": "EUR",
+        "items": [{"date": "", "description": "", "amount": 0.0}],
+        "package_mode": False,
+        "package_label": "1 Package FORMATION Anglais",
+        "total_due": 0.0,
+        "pay_link_url": "",
+    }
+
+
+def page_edit_invoice(ctx):
+    """Éditeur de facture : charge un PDF existant, modifie les champs, exporte."""
+    st.markdown("# 🎨 Éditer une facture")
+    st.caption("Charge une facture, modifie ce que tu veux, télécharge / envoie / re-stocke sur Drive.")
+
+    secrets = ctx["load_secrets"]()
+
+    state = st.session_state.setdefault("edit_inv_state", {"loaded": False})
+
+    # ===========================
+    # 1️⃣  SOURCE
+    # ===========================
+    st.markdown("### 1️⃣  Source de la facture")
+    tab_folder, tab_upload = st.tabs(["📁 Dossier de factures", "📤 Upload PDF"])
+
+    # ---- Tab 1 : dossier mois ----
+    with tab_folder:
+        folders = []
+        try:
+            folders = list_invoice_folders() or []
+        except Exception as e:
+            st.warning(f"⚠️ Listing dossiers indisponible : {e}")
+
+        if not folders:
+            st.info("Aucun dossier de factures trouvé (local + Drive).")
+        else:
+            choices = [f"{f.get('year', '')} / {f.get('month', '')}" for f in folders]
+            sel = st.selectbox("Dossier", choices, key="edit_inv_folder_pick")
+            sel_folder_obj = folders[choices.index(sel)] if sel in choices else folders[0]
+
+            folder_path_local = sel_folder_obj.get("path")
+
+            need_dl = (not folder_path_local) or (not os.path.exists(folder_path_local))
+            if need_dl:
+                st.caption("ℹ️  Ce dossier n'est pas en local, il faut le télécharger depuis Drive.")
+                if st.button("📥 Télécharger le dossier depuis Drive", key="edit_inv_dl_folder"):
+                    with st.spinner(f"Téléchargement de '{sel_folder_obj.get('month', '')}'..."):
+                        dl = load_invoice_folder(sel_folder_obj.get("year"), sel_folder_obj.get("month"))
+                    if dl.get("success"):
+                        folder_path_local = dl.get("local_path")
+                        st.success(f"✅ Téléchargé ({dl.get('downloaded', 0)} fichier(s))")
+                    else:
+                        st.error(f"❌ {dl.get('error')}")
+
+            if folder_path_local and os.path.exists(folder_path_local):
+                fams = sorted([
+                    d for d in os.listdir(folder_path_local)
+                    if os.path.isdir(os.path.join(folder_path_local, d))
+                ])
+                if fams:
+                    sel_fam = st.selectbox("Famille", fams, key="edit_inv_fam_pick")
+                    fam_path = os.path.join(folder_path_local, sel_fam)
+                    pdfs = sorted([
+                        f for f in os.listdir(fam_path) if f.lower().endswith(".pdf")
+                    ])
+
+                    if not pdfs:
+                        st.warning("Aucun PDF dans ce sous-dossier.")
+                    else:
+                        if len(pdfs) == 1:
+                            sel_pdf = pdfs[0]
+                            st.caption(f"📄 {sel_pdf}")
+                        else:
+                            sel_pdf = st.selectbox("Fichier PDF", pdfs, key="edit_inv_pdf_pick")
+
+                        if st.button("📥 Charger cette facture", key="edit_inv_load_folder", type="primary"):
+                            pdf_path = os.path.join(fam_path, sel_pdf)
+                            with open(pdf_path, "rb") as fh:
+                                state["raw_pdf_bytes"] = fh.read()
+
+                            # Pré-remplir depuis data + payment_links_output.json
+                            try:
+                                data_local = ctx.get("load_extracted_data", lambda: {})() or {}
+                            except Exception:
+                                data_local = {}
+                            fam_id = _find_fam_id_for_folder(data_local, sel_fam)
+                            fam = data_local.get(fam_id, {}) if fam_id else {}
+
+                            items_pf = []
+                            for L in fam.get("lessons", []):
+                                if L.get("attendance_status") == "AbsentNotice":
+                                    continue
+                                items_pf.append({
+                                    "date": L.get("date", ""),
+                                    "description": (
+                                        f"Cours avec {L.get('teacher','?')} pour "
+                                        f"{L.get('student','?')} ({L.get('duration_min','?')} min)"
+                                    ),
+                                    "amount": float(L.get("amount", 0) or 0),
+                                })
+
+                            pay_link = ""
+                            try:
+                                pl_path = os.path.join(ctx["DATA_DIR"], "payment_links_output.json")
+                                if os.path.exists(pl_path):
+                                    with open(pl_path, encoding="utf-8") as fh:
+                                        for p in json.load(fh):
+                                            if p.get("family_id") == fam_id:
+                                                pay_link = p.get("payment_link") or p.get("url") or ""
+                                                break
+                            except Exception:
+                                pass
+
+                            parent_name = fam.get("parent_name") or sel_fam.replace("_", " ")
+                            is_carole = ("carole" in parent_name.lower()
+                                         and "tessier" in parent_name.lower())
+
+                            state["fields"] = {
+                                "parent_name": parent_name,
+                                "billing_address": (
+                                    "OCTOPUS SARL\nC/o CATS BUSINESS CENTER\n"
+                                    "28 bd Princesse Charlotte\n98 000 MONACO"
+                                ) if is_carole else "",
+                                "parent_email": fam.get("parent_email") or fam.get("email_client") or "",
+                                "invoice_date": datetime.today().date(),
+                                "invoice_number": "",
+                                "currency": (fam.get("currency") or "EUR").upper(),
+                                "items": items_pf or [{"date": "", "description": "", "amount": 0.0}],
+                                "package_mode": is_carole,
+                                "package_label": "1 Package FORMATION Anglais",
+                                "total_due": sum(i["amount"] for i in items_pf),
+                                "pay_link_url": pay_link,
+                                "_origin_drive_folder_id": sel_folder_obj.get("drive_id"),
+                                "_origin_family_subfolder": sel_fam,
+                                "_origin_pdf_filename": sel_pdf,
+                            }
+                            state["loaded"] = True
+                            state["source"] = "folder"
+                            st.rerun()
+
+    # ---- Tab 2 : upload manuel ----
+    with tab_upload:
+        st.caption("Glisse un PDF de facture pour l'éditer (le formulaire sera vide, à remplir).")
+        uploaded = st.file_uploader("Charge un PDF", type=["pdf"], key="edit_inv_upload")
+        if uploaded is not None and not state.get("loaded"):
+            state["raw_pdf_bytes"] = uploaded.read()
+            state["fields"] = _empty_edit_fields()
+            state["loaded"] = True
+            state["source"] = "upload"
+            st.rerun()
+
+    if not state.get("loaded"):
+        st.info("👆 Charge d'abord une facture via les onglets ci-dessus.")
+        return
+
+    # ===========================
+    # 2️⃣  ÉDITION
+    # ===========================
+    st.markdown("---")
+    st.markdown("### 2️⃣  Édition des champs")
+    f = state["fields"]
+
+    f["parent_name"] = st.text_input("Nom du parent / famille", f.get("parent_name", ""), key="edit_inv_pn")
+    f["billing_address"] = st.text_area(
+        "Adresse 'Facturer à' (multi-ligne — vide = utiliser nom du parent)",
+        f.get("billing_address", ""),
+        height=100,
+        key="edit_inv_addr",
+        help="Ex : OCTOPUS SARL\nC/o CATS BUSINESS CENTER\n28 bd Princesse Charlotte\n98 000 MONACO",
+    )
+    f["parent_email"] = st.text_input(
+        "Email du destinataire (utilisé pour l'envoi)",
+        f.get("parent_email", ""),
+        key="edit_inv_email_in",
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        f["invoice_date"] = st.date_input(
+            "Date de facture",
+            f.get("invoice_date") or datetime.today().date(),
+            key="edit_inv_date",
+        )
+    with col2:
+        f["invoice_number"] = st.text_input(
+            "N° de facture (vide = auto)",
+            f.get("invoice_number", ""),
+            key="edit_inv_num",
+        )
+    with col3:
+        cur_options = ["EUR", "CHF"]
+        cur_cur = (f.get("currency") or "EUR").upper()
+        cur_idx = cur_options.index(cur_cur) if cur_cur in cur_options else 0
+        f["currency"] = st.selectbox("Devise", cur_options, index=cur_idx, key="edit_inv_cur")
+
+    f["package_mode"] = st.checkbox(
+        "📦 Format Package (1 ligne, style OCTOPUS Carole — pas de tableau de leçons)",
+        value=bool(f.get("package_mode", False)),
+        key="edit_inv_pkg",
+    )
+
+    if f["package_mode"]:
+        f["package_label"] = st.text_input(
+            "Libellé du Package",
+            f.get("package_label", "1 Package FORMATION Anglais"),
+            key="edit_inv_pkg_label",
+        )
+        f["total_due"] = st.number_input(
+            "Total dû",
+            value=float(f.get("total_due", 0.0)),
+            step=0.01,
+            format="%.2f",
+            key="edit_inv_total_pkg",
+        )
+    else:
+        st.markdown("**📋 Lignes de la facture** — date au format `JJ.MM.AAAA`")
+        items = f.setdefault("items", [])
+        if st.button("➕ Ajouter une ligne", key="edit_inv_add_row"):
+            items.append({"date": "", "description": "", "amount": 0.0})
+            st.rerun()
+
+        for i, row in enumerate(items):
+            cols = st.columns([2, 5, 2, 1])
+            with cols[0]:
+                row["date"] = st.text_input(
+                    "Date", row.get("date", ""),
+                    key=f"edit_inv_d_{i}", label_visibility="collapsed",
+                    placeholder="JJ.MM.AAAA",
+                )
+            with cols[1]:
+                row["description"] = st.text_input(
+                    "Description", row.get("description", ""),
+                    key=f"edit_inv_desc_{i}", label_visibility="collapsed",
+                    placeholder="Description de la prestation",
+                )
+            with cols[2]:
+                row["amount"] = st.number_input(
+                    "Montant", value=float(row.get("amount", 0.0)),
+                    key=f"edit_inv_amt_{i}", label_visibility="collapsed",
+                    step=0.01, format="%.2f",
+                )
+            with cols[3]:
+                if st.button("🗑", key=f"edit_inv_del_{i}", help="Supprimer cette ligne"):
+                    items.pop(i)
+                    st.rerun()
+
+        auto_total = sum(float(r.get("amount", 0) or 0) for r in items)
+        st.metric("Total (somme auto)", f"{auto_total:.2f} {f['currency']}")
+        f["total_due"] = auto_total
+
+    f["pay_link_url"] = st.text_input(
+        "Lien de paiement Stripe (URL du bouton 'Cliquez ici pour payer')",
+        f.get("pay_link_url", ""),
+        key="edit_inv_pay_link",
+    )
+
+    if state.get("raw_pdf_bytes"):
+        with st.expander("👁  Aperçu du PDF original (pour référence)"):
+            import base64
+            b64 = base64.b64encode(state["raw_pdf_bytes"]).decode()
+            st.markdown(
+                f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="500px"></iframe>',
+                unsafe_allow_html=True,
+            )
+
+    # ===========================
+    # 3️⃣  GÉNÉRATION
+    # ===========================
+    st.markdown("---")
+    st.markdown("### 3️⃣  Générer & Exporter")
+
+    if st.button("📄 Générer le PDF édité", type="primary", width="stretch", key="edit_inv_generate"):
+        try:
+            import tempfile as _tf
+            from scripts.generate_invoices import _build_invoice_pdf
+
+            items_for_pdf = []
+            for r in f.get("items", []):
+                d = datetime.min
+                if r.get("date"):
+                    try:
+                        d = datetime.strptime(r["date"], "%d.%m.%Y")
+                    except Exception:
+                        pass
+                items_for_pdf.append({
+                    "date": d,
+                    "description": r.get("description", ""),
+                    "amount": float(r.get("amount", 0) or 0),
+                })
+
+            with _tf.TemporaryDirectory() as tmpdir:
+                out = os.path.join(tmpdir, "edited.pdf")
+                ctr = os.path.join(tmpdir, "ctr")
+                logo = os.path.join(ctx["BASE_DIR"], "assets", "logo.png")
+
+                _build_invoice_pdf(
+                    output_path=out,
+                    items=items_for_pdf,
+                    total_due_display=f"{f['total_due']:.2f} {f['currency']}",
+                    pay_link_url=(f.get("pay_link_url") or "https://example.com"),
+                    parent_name=(f.get("parent_name") or "Parent"),
+                    logo_path=logo if os.path.exists(logo) else None,
+                    counter_root=ctr,
+                    today=datetime.combine(f["invoice_date"], datetime.min.time()),
+                    is_notion_custom=bool(f.get("package_mode", False)),
+                    custom_billing_address=(f.get("billing_address") or None),
+                    invoice_number_override=(f.get("invoice_number") or None),
+                    custom_package_label=(
+                        f.get("package_label") if f.get("package_mode") else None
+                    ),
+                )
+
+                with open(out, "rb") as fp:
+                    state["edited_pdf_bytes"] = fp.read()
+
+            st.success("✅ PDF généré ! Voir aperçu et actions ci-dessous.")
+        except Exception as e:
+            import traceback
+            st.error(f"❌ Erreur génération : {e}")
+            with st.expander("Traceback"):
+                st.code(traceback.format_exc())
+
+    if state.get("edited_pdf_bytes"):
+        with st.expander("👁  Aperçu du PDF édité", expanded=True):
+            import base64
+            b64 = base64.b64encode(state["edited_pdf_bytes"]).decode()
+            st.markdown(
+                f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="700px"></iframe>',
+                unsafe_allow_html=True,
+            )
+
+        safe_name = (f.get("parent_name") or "facture").replace(" ", "_")
+        date_str = f["invoice_date"].strftime("%Y-%m-%d")
+        default_filename = f"Facture_{date_str}_{safe_name}.pdf"
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.download_button(
+                "📥 Télécharger",
+                data=state["edited_pdf_bytes"],
+                file_name=default_filename,
+                mime="application/pdf",
+                width="stretch",
+                key="edit_inv_dl",
+            )
+
+        with col2:
+            if st.button("📧 Envoyer par email", width="stretch", key="edit_inv_email_btn"):
+                try:
+                    from email.mime.multipart import MIMEMultipart
+                    from email.mime.text import MIMEText
+                    from email.mime.base import MIMEBase
+                    from email import encoders
+                    import smtplib
+
+                    gmail = secrets.get("gmail", {})
+                    sender = gmail.get("email")
+                    pwd = gmail.get("app_password")
+                    recipient = (f.get("parent_email") or "").strip()
+
+                    if not (sender and pwd):
+                        st.error("❌ Configuration email manquante (gmail.email / gmail.app_password)")
+                    elif not recipient:
+                        st.error("❌ Email du destinataire vide (champ 'Email du destinataire')")
+                    else:
+                        msg = MIMEMultipart()
+                        msg["From"] = sender
+                        msg["To"] = recipient
+                        msg["Subject"] = f"Facture - {f.get('parent_name', '')}".strip(" -")
+                        msg.attach(MIMEText(
+                            "Bonjour,\n\nVeuillez trouver ci-joint la facture éditée.\n\nCordialement.",
+                            "plain", "utf-8",
+                        ))
+                        part = MIMEBase("application", "pdf")
+                        part.set_payload(state["edited_pdf_bytes"])
+                        encoders.encode_base64(part)
+                        part.add_header("Content-Disposition", f"attachment; filename={default_filename}")
+                        msg.attach(part)
+
+                        s = smtplib.SMTP("smtp.gmail.com", 587)
+                        s.starttls()
+                        s.login(sender, pwd)
+                        s.sendmail(sender, recipient, msg.as_string())
+                        s.quit()
+                        st.success(f"✅ Envoyé à {recipient}")
+                except Exception as e:
+                    st.error(f"❌ Erreur envoi : {e}")
+
+        with col3:
+            origin_dl_id = f.get("_origin_drive_folder_id")
+            origin_subfolder = f.get("_origin_family_subfolder")
+            disabled_drive = not (origin_dl_id and origin_subfolder)
+            label_drive = ("☁️ Écraser sur Drive" if not disabled_drive
+                           else "☁️ Drive (source folder requise)")
+            if st.button(label_drive, width="stretch", disabled=disabled_drive, key="edit_inv_drive_btn"):
+                try:
+                    import tempfile as _tf2
+                    from scripts.google_drive import (
+                        get_drive_service, find_or_create_folder, upload_file,
+                    )
+
+                    service = get_drive_service()
+                    if not service:
+                        st.error("❌ Drive non configuré")
+                    else:
+                        fam_folder_id = find_or_create_folder(
+                            service, origin_subfolder, origin_dl_id
+                        )
+                        with _tf2.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                            tmp.write(state["edited_pdf_bytes"])
+                            tmp_path = tmp.name
+                        try:
+                            up = upload_file(
+                                tmp_path,
+                                drive_filename=default_filename,
+                                folder_id=fam_folder_id,
+                            )
+                            if up.get("success"):
+                                st.success(f"✅ Uploadé sur Drive (file_id: {up.get('file_id', '')[:14]}...)")
+                            else:
+                                st.error(f"❌ {up.get('error', 'erreur inconnue')}")
+                        finally:
+                            try:
+                                os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    st.error(f"❌ Erreur upload Drive : {e}")
+
+    st.markdown("---")
+    if st.button("🔄 Recommencer (vider l'éditeur)", key="edit_inv_reset"):
+        st.session_state.pop("edit_inv_state", None)
+        st.rerun()

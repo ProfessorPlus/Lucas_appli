@@ -182,10 +182,19 @@ def _next_invoice_number(counter_root, invoice_date):
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                        parent_name, logo_path, counter_root, today, is_notion_custom=False,
-                       previous_items=None, previous_month_label=None):
+                       previous_items=None, previous_month_label=None,
+                       custom_billing_address=None, invoice_number_override=None,
+                       custom_package_label=None):
     """
     Génère un PDF de facture.
-    
+
+    Args (overrides utilisés par l'éditeur de facture) :
+        custom_billing_address: texte multi-ligne pour "Facturer à"
+            (override l'adresse OCTOPUS / parent_name)
+        invoice_number_override: numéro de facture custom (sinon auto via compteur)
+        custom_package_label: libellé custom du Package (mode is_notion_custom)
+            (sinon "1 Package FORMATION Anglais")
+
     Args:
         output_path: chemin du fichier PDF
         items: liste de {"date": datetime, "description": str, "amount": float}
@@ -256,10 +265,17 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     st_header = ParagraphStyle(name="th", fontName=FONT_BOLD, fontSize=12, alignment=TA_CENTER, textColor=colors.white)
 
     date_str = today.strftime("%d.%m.%Y")
-    inv_number = _next_invoice_number(counter_root, today)
+    inv_number = invoice_number_override if invoice_number_override else _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    if is_notion_custom:
+    if custom_billing_address:
+        # Éditeur : adresse "Facturer à" personnalisée multi-ligne.
+        # Pas de tagline à gauche (style packagé).
+        left_band = Paragraph("", st_sub)
+        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        addr_html = "<b>Facturer à :</b><br/>" + custom_billing_address.replace("\n", "<br/>")
+        middle_band = Paragraph(addr_html, st_addr_mid)
+    elif is_notion_custom:
         # Carole / Notion custom : pas de tagline, adresse OCTOPUS dans "Facturer à"
         left_band = Paragraph("", st_sub)  # Vide à gauche
         st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
@@ -305,10 +321,11 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         ]
 
         # Ligne unique : 1 Package FORMATION Anglais / Professionnel
+        # (libellé override-able via custom_package_label depuis l'éditeur)
         st_package = ParagraphStyle(name="pkg", fontName=FONT_BOLD, fontSize=10)
         st_package_frais = ParagraphStyle(name="pkgf", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_BLUE)
         data_tbl.append([
-            Paragraph("1 Package FORMATION Anglais", st_package),
+            Paragraph(custom_package_label or "1 Package FORMATION Anglais", st_package),
             Paragraph("Professionnel", st_package_frais),
         ])
         
