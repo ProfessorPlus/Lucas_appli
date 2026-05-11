@@ -138,7 +138,7 @@ def _update_metadata(secrets, key_name, value=None, date_value=None):
         print(f"⚠️ Metadata update failed for {key_name}: {e}")
 
 
-def _get_zero_hour_notion_profs():
+def _get_zero_hour_notion_profs(secrets=None):
     """Retourne le set des profs listés à 0h dans 'Profs hors TutorBird' Notion.
 
     Utilisé pour exclure ces profs de TOUT calcul de récap/net afin que les
@@ -146,9 +146,24 @@ def _get_zero_hour_notion_profs():
     affichent toutes la même valeur. Sans ça, un prof comme Imane Berrai
     apparaît à 1950€ dans la summary d'extraction et 0€ dans le récap.
 
-    Les données viennent de st.session_state.notion_profs_data, peuplé par
-    le bouton 'Rafraîchir depuis Notion' dans la page d'extraction.
+    Lazy-load : si secrets est fourni et que session_state.notion_profs_data
+    n'est pas encore peuplé (premier passage après reboot Streamlit), on
+    fetch automatiquement depuis Notion une fois et on met en cache dans
+    session_state. Évite que l'utilisateur doive cliquer 'Rafraîchir depuis
+    Notion' manuellement avant que la math soit correcte.
     """
+    if "notion_profs_data" not in st.session_state and secrets:
+        try:
+            from scripts.fetch_notion_profs import fetch_notion_profs
+            res = fetch_notion_profs(secrets)
+            if res.get("success"):
+                st.session_state.notion_profs_data = res.get("entries", [])
+            else:
+                st.session_state.notion_profs_data = []
+        except Exception as _e:
+            print(f"⚠️ Lazy fetch Notion profs hors TB échoué : {_e}")
+            st.session_state.notion_profs_data = []
+
     excluded = set()
     try:
         for e in st.session_state.get("notion_profs_data", []) or []:
@@ -263,7 +278,8 @@ def page_accueil(ctx):
             if st.session_state.get("extract_dates"):
                 extraction_end = st.session_state["extract_dates"].get("end_date")
             # Cohérence avec le récap profs : exclure les profs à 0h dans Notion hors TutorBird.
-            _excluded = _get_zero_hour_notion_profs()
+            # Passer secrets pour activer le lazy-fetch (au reboot Streamlit, session vide).
+            _excluded = _get_zero_hour_notion_profs(secrets)
             recap = compute_teacher_recap(
                 data, secrets, familles_euros, tarifs_speciaux,
                 extraction_end_date=extraction_end,
@@ -774,7 +790,8 @@ def page_extract(ctx):
                     _extraction_end = st.session_state["extract_dates"].get("end_date")
                 if _data_for_net and _secrets:
                     # Cohérence avec le récap profs : exclure les profs à 0h dans Notion.
-                    _excluded_e = _get_zero_hour_notion_profs()
+                    # Passer secrets pour activer le lazy-fetch (session vide après reboot).
+                    _excluded_e = _get_zero_hour_notion_profs(_secrets)
                     _recap = compute_teacher_recap(
                         _data_for_net, _secrets, _familles_euros, _tarifs_speciaux,
                         extraction_end_date=_extraction_end,
@@ -4117,7 +4134,8 @@ def page_profs(ctx):
     # Profs listés à 0h dans "Profs hors TutorBird" Notion → à exclure du récap.
     # Évite qu'un prof comme Imane Berrai (0h dans Notion) apparaisse avec
     # 26 leçons / 1950€ via des leçons TB résiduelles non nettoyées.
-    excluded_teachers = _get_zero_hour_notion_profs()
+    # Passer secrets pour activer le lazy-fetch (session vide après reboot Streamlit).
+    excluded_teachers = _get_zero_hour_notion_profs(secrets)
 
     try:
         recap = compute_teacher_recap(
