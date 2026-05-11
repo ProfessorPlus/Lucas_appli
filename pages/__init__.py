@@ -204,15 +204,20 @@ def page_accueil(ctx):
     # (Bug historique : Net EUR ignorait AED → divergence avec À facturer.)
     # ====================================================================
     ca_total_eur = None
+    # Variables utilisées par l'expander 'Détail du calcul Net' ci-dessous.
+    _fx_chf = None
+    _fx_chf_src = ""
+    _fx_aed = None
+    _fx_aed_src = ""
     try:
         from scripts.recap_profs import fetch_chf_eur_rate, fetch_fx_rate
         _eur_equiv = total_eur
         if total_chf > 0:
-            _chf_rate, _ = fetch_chf_eur_rate()
-            _eur_equiv += total_chf * _chf_rate
+            _fx_chf, _fx_chf_src = fetch_chf_eur_rate()
+            _eur_equiv += total_chf * _fx_chf
         if total_aed > 0:
-            _aed_rate, _ = fetch_fx_rate("AED", "EUR")
-            _eur_equiv += total_aed * _aed_rate
+            _fx_aed, _fx_aed_src = fetch_fx_rate("AED", "EUR")
+            _eur_equiv += total_aed * _fx_aed
         ca_total_eur = _eur_equiv
     except Exception as _e:
         print(f"⚠️ Erreur calcul CA EUR équivalent: {_e}")
@@ -247,6 +252,10 @@ def page_accueil(ctx):
     net_eur_display = "—"
     net_eur_sub = ""
     net_amount_inline = ""  # ligne supplémentaire dans la card À facturer
+    _breakdown_recap = None
+    _breakdown_excluded = set()
+    _breakdown_profs_eur = 0.0
+    _breakdown_net_eur = None
     try:
         if data and secrets and ca_total_eur is not None:
             tarifs_speciaux = ctx["load_tarifs_speciaux"]() if callable(ctx.get("load_tarifs_speciaux")) else []
@@ -265,6 +274,10 @@ def page_accueil(ctx):
             net_eur_display = f"{net_eur:,.0f} €"
             net_eur_sub = f"CA {ca_total_eur:,.0f} € − Profs {profs_total_eur:,.0f} €"
             net_amount_inline = f"Net : {net_eur:,.0f} €"
+            _breakdown_recap = recap
+            _breakdown_excluded = _excluded
+            _breakdown_profs_eur = profs_total_eur
+            _breakdown_net_eur = net_eur
     except Exception as _e:
         print(f"⚠️ Erreur calcul net EUR: {_e}")
 
@@ -280,7 +293,74 @@ def page_accueil(ctx):
     with col4:
         net_sub_html = f'<div style="font-size: 0.75rem; color: #666; margin-top: 2px;">{net_eur_sub}</div>' if net_eur_sub else ""
         st.markdown(f'<div class="stat-card"><div class="stat-label">💶 Mon net EUR</div><div class="stat-value" style="color: #28a745;">{net_eur_display}</div>{net_sub_html}</div>', unsafe_allow_html=True)
-    
+
+    # ===========================
+    # EXPANDER : DÉTAIL DU CALCUL NET (transparence pour comparer avec TutorBird)
+    # ===========================
+    if _breakdown_net_eur is not None:
+        with st.expander("🔍 Détail du calcul Net (transparence)", expanded=False):
+            st.markdown("**1. CA par devise (avant conversion)**")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("EUR", f"{total_eur:,.2f} €")
+            with c2:
+                st.metric("CHF", f"{total_chf:,.2f} CHF")
+            with c3:
+                st.metric("AED", f"{total_aed:,.2f} AED")
+
+            st.markdown("**2. Conversion → EUR**")
+            lines = [f"- {total_eur:,.2f} € (EUR direct)"]
+            if total_chf > 0:
+                if _fx_chf is not None:
+                    lines.append(
+                        f"- {total_chf:,.2f} CHF × {_fx_chf:.6f} = "
+                        f"**{total_chf * _fx_chf:,.2f} €** _(taux : {_fx_chf_src})_"
+                    )
+                else:
+                    lines.append(f"- {total_chf:,.2f} CHF (taux indisponible)")
+            if total_aed > 0:
+                if _fx_aed is not None:
+                    lines.append(
+                        f"- {total_aed:,.2f} AED × {_fx_aed:.6f} = "
+                        f"**{total_aed * _fx_aed:,.2f} €** _(taux : {_fx_aed_src})_"
+                    )
+                else:
+                    lines.append(f"- {total_aed:,.2f} AED (taux indisponible)")
+            st.markdown("\n".join(lines))
+            st.markdown(f"**CA total : `{ca_total_eur:,.2f} €`**")
+
+            st.markdown("**3. Profs à payer (somme du récap)**")
+            if _breakdown_recap and _breakdown_recap.get("teachers"):
+                prof_rows = []
+                for tname, tdata in sorted(_breakdown_recap["teachers"].items()):
+                    total_t = (tdata.get("eur", 0) or 0) + (tdata.get("chf_as_eur", 0) or 0)
+                    if tdata.get("nb_lessons", 0) > 0:
+                        prof_rows.append(
+                            f"- **{tname}** — {tdata.get('nb_lessons', 0)} leçons "
+                            f"({tdata.get('total_hours', 0):.1f}h) → **{total_t:,.2f} €**"
+                        )
+                st.markdown("\n".join(prof_rows) if prof_rows else "_Aucun prof actif_")
+            st.markdown(f"**Profs total : `{_breakdown_profs_eur:,.2f} €`**")
+
+            if _breakdown_excluded:
+                st.markdown(
+                    f"**Profs exclus (0h dans Notion hors TutorBird) :** "
+                    f"{', '.join(sorted(_breakdown_excluded))}"
+                )
+
+            st.markdown("---")
+            st.markdown(
+                f"**4. Net = CA − Profs = `{ca_total_eur:,.2f} − "
+                f"{_breakdown_profs_eur:,.2f} = {_breakdown_net_eur:,.2f} €`**"
+            )
+
+            st.caption(
+                "ℹ️ **Pourquoi ça peut différer de TutorBird :** TB n'inclut pas "
+                "les familles EUR ni les profs hors TutorBird (Notion), peut "
+                "utiliser des taux profs différents de ceux de ton secrets.yaml, "
+                "et applique des taux de conversion différents."
+            )
+
     # ===========================
     # SECTION PAIEMENTS
     # ===========================
