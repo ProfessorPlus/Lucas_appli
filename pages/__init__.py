@@ -4005,11 +4005,33 @@ def page_profs(ctx):
     except Exception:
         extraction_end = None
 
+    # Profs listés à 0h dans "Profs hors TutorBird" Notion → à exclure du récap.
+    # Évite qu'un prof comme Imane Berrai (0h dans Notion) apparaisse avec
+    # 26 leçons / 1950€ via des leçons TB résiduelles non nettoyées.
+    excluded_teachers = set()
     try:
-        recap = compute_teacher_recap(data, secrets, familles_euros, tarifs_speciaux, extraction_end_date=extraction_end)
+        for e in st.session_state.get("notion_profs_data", []) or []:
+            if float(e.get("heures_faites") or 0) <= 0:
+                prof = (e.get("professeur") or "").strip()
+                if prof:
+                    excluded_teachers.add(prof)
+    except Exception:
+        pass
+
+    try:
+        recap = compute_teacher_recap(
+            data, secrets, familles_euros, tarifs_speciaux,
+            extraction_end_date=extraction_end,
+            excluded_teacher_names=excluded_teachers,
+        )
     except RuntimeError as e:
         st.error(str(e))
         return
+
+    if excluded_teachers:
+        st.caption(
+            f"ℹ️ Profs à 0h dans Notion exclus du récap : {', '.join(sorted(excluded_teachers))}"
+        )
 
     teachers = recap["teachers"]
     grand_total = recap["grand_total"]

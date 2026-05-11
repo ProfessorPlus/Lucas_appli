@@ -234,6 +234,7 @@ def compute_teacher_recap(
     tarifs_speciaux,
     extraction_end_date=None,
     chf_to_eur_factor=None,
+    excluded_teacher_names=None,
 ):
     """
     Calcule le récap des montants à payer à chaque prof.
@@ -245,6 +246,10 @@ def compute_teacher_recap(
         tarifs_speciaux: liste des tarifs spéciaux
         extraction_end_date: date/datetime/str -> fin de période TutorBird (mois utilisé pour l’API)
         chf_to_eur_factor: float optionnel pour forcer le facteur (prioritaire)
+        excluded_teacher_names: iterable de noms de profs à exclure entièrement du récap.
+            Cas d'usage : profs apparaissant en "Profs hors TutorBird" Notion avec
+            0h (ils ne devraient pas figurer dans le récap, même si TB a des leçons
+            résiduelles à leur nom). Matching par nom normalisé (norm()).
 
     Returns:
         dict: {
@@ -255,6 +260,13 @@ def compute_teacher_recap(
         }
     """
     teachers_cfg = secrets.get("teachers", {})
+
+    # Set normalisé des profs à exclure du récap (ex: 0h dans Notion hors TutorBird)
+    excluded_norm = set()
+    if excluded_teacher_names:
+        for name in excluded_teacher_names:
+            if name:
+                excluded_norm.add(norm(name))
 
     # Build lookup
     teacher_lookup = {}
@@ -357,6 +369,13 @@ def compute_teacher_recap(
                 continue
 
             t_name = lesson.get("teacher") or ""
+
+            # Exclusion : prof listé à 0h dans "Profs hors TutorBird" Notion.
+            # On skippe toutes ses leçons (TB et Notion) pour qu'il n'apparaisse
+            # pas du tout dans le récap, même si TB a des leçons résiduelles.
+            if t_name and norm(t_name) in excluded_norm:
+                continue
+
             duration = lesson.get("duration_min") or 0
             hours = duration / 60.0
 
