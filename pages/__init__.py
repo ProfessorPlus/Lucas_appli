@@ -138,6 +138,29 @@ def _update_metadata(secrets, key_name, value=None, date_value=None):
         print(f"⚠️ Metadata update failed for {key_name}: {e}")
 
 
+def _get_zero_hour_notion_profs():
+    """Retourne le set des profs listés à 0h dans 'Profs hors TutorBird' Notion.
+
+    Utilisé pour exclure ces profs de TOUT calcul de récap/net afin que les
+    sections (Accueil 'À facturer', Extraction summary, Page Professeurs)
+    affichent toutes la même valeur. Sans ça, un prof comme Imane Berrai
+    apparaît à 1950€ dans la summary d'extraction et 0€ dans le récap.
+
+    Les données viennent de st.session_state.notion_profs_data, peuplé par
+    le bouton 'Rafraîchir depuis Notion' dans la page d'extraction.
+    """
+    excluded = set()
+    try:
+        for e in st.session_state.get("notion_profs_data", []) or []:
+            if float(e.get("heures_faites") or 0) <= 0:
+                prof = (e.get("professeur") or "").strip()
+                if prof:
+                    excluded.add(prof)
+    except Exception:
+        pass
+    return excluded
+
+
 def page_accueil(ctx):
     st.markdown("""
     <div class="header-card">
@@ -230,9 +253,12 @@ def page_accueil(ctx):
             extraction_end = None
             if st.session_state.get("extract_dates"):
                 extraction_end = st.session_state["extract_dates"].get("end_date")
+            # Cohérence avec le récap profs : exclure les profs à 0h dans Notion hors TutorBird.
+            _excluded = _get_zero_hour_notion_profs()
             recap = compute_teacher_recap(
                 data, secrets, familles_euros, tarifs_speciaux,
                 extraction_end_date=extraction_end,
+                excluded_teacher_names=_excluded,
             )
             profs_total_eur = recap.get("grand_total", 0)
             net_eur = ca_total_eur - profs_total_eur
@@ -667,9 +693,12 @@ def page_extract(ctx):
                 if st.session_state.get("extract_dates"):
                     _extraction_end = st.session_state["extract_dates"].get("end_date")
                 if _data_for_net and _secrets:
+                    # Cohérence avec le récap profs : exclure les profs à 0h dans Notion.
+                    _excluded_e = _get_zero_hour_notion_profs()
                     _recap = compute_teacher_recap(
                         _data_for_net, _secrets, _familles_euros, _tarifs_speciaux,
                         extraction_end_date=_extraction_end,
+                        excluded_teacher_names=_excluded_e,
                     )
                     _profs_total_eur = _recap.get("grand_total", 0)
                     
@@ -4008,15 +4037,7 @@ def page_profs(ctx):
     # Profs listés à 0h dans "Profs hors TutorBird" Notion → à exclure du récap.
     # Évite qu'un prof comme Imane Berrai (0h dans Notion) apparaisse avec
     # 26 leçons / 1950€ via des leçons TB résiduelles non nettoyées.
-    excluded_teachers = set()
-    try:
-        for e in st.session_state.get("notion_profs_data", []) or []:
-            if float(e.get("heures_faites") or 0) <= 0:
-                prof = (e.get("professeur") or "").strip()
-                if prof:
-                    excluded_teachers.add(prof)
-    except Exception:
-        pass
+    excluded_teachers = _get_zero_hour_notion_profs()
 
     try:
         recap = compute_teacher_recap(
