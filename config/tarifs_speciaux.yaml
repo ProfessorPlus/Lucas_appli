@@ -18,3 +18,7 @@ tarifs_speciaux:
     parent: "Nikitina Anna"
     pay_rate: 40
     currency: "EUR"
+  - teacher: "Anna Lempereur"
+    parent: "Delphine Eggel"
+    pay_rate: 30.0
+    currency: "EUR"

@@ -76,6 +76,12 @@ backend/jobs.db-journal
 backend/.env
 backend/.venv/
 
+# Frontend env files (Next.js — never commit secrets or API keys)
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
 # =========================
 # 🚫 HORS PÉRIMÈTRE ABSOLU
 # =========================
