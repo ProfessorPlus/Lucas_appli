@@ -17,8 +17,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.jobs import get_job_manager
-from app.routes import dashboard, diagnostics, extract, health, jobs, payment_links
+from app.routes import (
+    cleanup,
+    dashboard,
+    diagnostics,
+    extract,
+    health,
+    invoices,
+    jobs,
+    payment_links,
+    payroll,
+    reminders,
+    send,
+    sync,
+)
 from app.routes import settings as settings_routes
+from app.routes import update_notion_routes
 from app.services.paths import ensure_scripts_on_path
 
 # Make the legacy scripts/ package importable from anywhere in this app.
@@ -45,6 +59,13 @@ app.include_router(settings_routes.router, prefix="/api")
 app.include_router(diagnostics.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(payment_links.router, prefix="/api")
+app.include_router(invoices.router, prefix="/api")
+app.include_router(send.router, prefix="/api")
+app.include_router(reminders.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")
+app.include_router(update_notion_routes.router, prefix="/api")
+app.include_router(cleanup.router, prefix="/api")
+app.include_router(payroll.router, prefix="/api")
 
 
 @app.on_event("startup")
