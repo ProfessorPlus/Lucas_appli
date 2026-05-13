@@ -7,8 +7,15 @@ Abstrait les opérations de lecture/écriture pour fonctionner en local et sur l
 import os
 import json
 import io
-import streamlit as st
 from datetime import datetime
+
+# streamlit was imported here historically but is never used in this module.
+# Keep the import optional so the legacy scripts/ package loads cleanly in
+# non-Streamlit contexts (FastAPI backend).
+try:
+    import streamlit as st  # type: ignore[import-not-found]  # noqa: F401
+except ImportError:
+    st = None  # type: ignore[assignment]
 
 # Import Google Drive (optionnel)
 try:

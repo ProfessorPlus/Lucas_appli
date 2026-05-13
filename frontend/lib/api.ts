@@ -239,3 +239,47 @@ export interface PhantomTeachersReport {
   tb_teacher_count?: number;
   note?: string;
 }
+
+// ── Dashboard ────────────────────────────────────────────────────────────
+
+export interface DashboardSummary {
+  nb_profs: number;
+  nb_profs_breakdown: { tutorbird_or_secrets: number; notion_only: number };
+  nb_families: number;
+  amounts_by_currency: Record<string, number>;
+  ca_total_eur: number;
+  profs_total_eur: number;
+  net_eur: number;
+  extraction_end: string | null;
+}
+
+export interface InvoiceFolder {
+  id: string;
+  month: string;
+  year?: string | number;
+  source?: string;
+}
+
+export interface DashboardPayments {
+  folder: string;
+  target_month: string | null;
+  total: number;
+  paid: number;
+  unpaid: number;
+  pct: number;
+  amounts_by_currency_paid: Record<string, number>;
+  amounts_by_currency_due: Record<string, number>;
+  error?: string;
+}
+
+export interface DashboardEmails {
+  invoice_sent_date: string | null;
+  reminder_sent_date: string | null;
+  reminder_count: number;
+  error?: string;
+}
+
+export interface RandomQuotes {
+  hadith: { text: string; source: string; narrator: string };
+  quote: { text: string; author: string };
+}

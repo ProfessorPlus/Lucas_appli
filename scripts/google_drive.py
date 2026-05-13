@@ -16,7 +16,37 @@ import json
 import io
 from datetime import datetime
 
-import streamlit as st
+# Optional streamlit — same shim as scripts/config_loader.py so this module
+# also loads in non-Streamlit contexts (the FastAPI backend).
+try:
+    import streamlit as st  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+
+    class _StSecretsShim:
+        def get(self, key, default=None):
+            return default
+
+        def __contains__(self, key):
+            return False
+
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+    class _StSessionShim(dict):
+        def __setattr__(self, k, v):
+            self[k] = v
+
+        def __getattr__(self, k):
+            try:
+                return self[k]
+            except KeyError:
+                raise AttributeError(k)
+
+    class _StShim:
+        secrets = _StSecretsShim()
+        session_state = _StSessionShim()
+
+    st = _StShim()  # type: ignore[assignment]
 
 # Google Drive API
 from google.oauth2 import service_account
