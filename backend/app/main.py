@@ -17,7 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.jobs import get_job_manager
-from app.routes import extract, health, jobs
+from app.routes import diagnostics, extract, health, jobs
+from app.routes import settings as settings_routes
 from app.services.paths import ensure_scripts_on_path
 
 # Make the legacy scripts/ package importable from anywhere in this app.
@@ -40,6 +41,8 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(extract.router, prefix="/api")
+app.include_router(settings_routes.router, prefix="/api")
+app.include_router(diagnostics.router, prefix="/api")
 
 
 @app.on_event("startup")

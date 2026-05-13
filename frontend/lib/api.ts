@@ -122,3 +122,120 @@ export interface NotionProfsResponse {
   entries: NotionProfEntry[];
   error: string | null;
 }
+
+// ── Settings ─────────────────────────────────────────────────────────────
+
+export interface Teacher {
+  name: string;
+  connect_account_id: string;
+  pay_rate_chf: number;
+  pay_rate_eur: number;
+  auto_chf: boolean;
+}
+
+export interface TeacherInput {
+  name: string;
+  connect_account_id?: string;
+  pay_rate_chf?: number;
+  pay_rate_eur?: number;
+  auto_chf?: boolean;
+}
+
+export interface TeacherStripeStatus {
+  name: string;
+  account_id: string;
+  status:
+    | "active"
+    | "pending"
+    | "incomplete"
+    | "unconfigured"
+    | "error"
+    | "no_stripe_key"
+    | "stripe_not_installed";
+  charges_enabled?: boolean;
+  payouts_enabled?: boolean;
+  details_submitted?: boolean;
+  error?: string;
+}
+
+export interface SpecialRate {
+  id: string;
+  teacher: string;
+  parent: string;
+  student: string;
+  pay_rate: number;
+  currency: string;
+}
+
+export interface SpecialRateInput {
+  teacher: string;
+  parent: string;
+  pay_rate: number;
+  currency?: string;
+  student?: string;
+}
+
+export interface EmailConfig {
+  email: string;
+  app_password_set: boolean;
+  app_password_preview: string;
+}
+
+export interface DriveTestResult {
+  ok: boolean;
+  root_id?: string;
+  config_folder_id?: string;
+  files?: Array<{ id: string; name: string; size?: string; modifiedTime: string }>;
+  error?: string;
+}
+
+export interface DriveWriteTestResult {
+  ok: boolean;
+  test_target?: string;
+  drive_id?: string;
+  new_modified_time?: string;
+  note?: string;
+  error?: string;
+}
+
+// ── Diagnostics ──────────────────────────────────────────────────────────
+
+export interface ConfigSyncFile {
+  filename: string;
+  local_exists: boolean;
+  local_size: number;
+  drive_exists: boolean;
+  drive_id: string | null;
+  drive_modified_time: string | null;
+  diff: {
+    status: "in_sync" | "diverged" | "missing_both" | "error";
+    only_local?: string[] | string[][];
+    only_drive?: string[] | string[][];
+    changed?: string[][];
+    local_count?: number;
+    drive_count?: number;
+    masked_diff?: Record<string, unknown>;
+    error?: string;
+  };
+}
+
+export interface ConfigSyncReport {
+  all_in_sync: boolean;
+  files: Record<string, ConfigSyncFile>;
+}
+
+export interface PhantomTeacherAlert {
+  severity: "high" | "medium" | "low";
+  teacher: string;
+  tb_lessons: number;
+  tb_hours: number;
+  tb_unrecorded: number;
+  families: string[];
+  note: string;
+}
+
+export interface PhantomTeachersReport {
+  alerts: PhantomTeacherAlert[];
+  tb_teacher_count?: number;
+  note?: string;
+}

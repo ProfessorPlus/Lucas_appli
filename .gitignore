@@ -76,6 +76,10 @@ backend/jobs.db-journal
 backend/.env
 backend/.venv/
 
+# yaml_io auto-backups (created on every write_yaml)
+*.yaml.prev
+*.local-backup.yaml
+
 # Frontend env files (Next.js — never commit secrets or API keys)
 .env.local
 .env.development.local
