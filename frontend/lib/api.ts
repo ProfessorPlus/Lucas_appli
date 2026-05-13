@@ -283,3 +283,52 @@ export interface RandomQuotes {
   hadith: { text: string; source: string; narrator: string };
   quote: { text: string; author: string };
 }
+
+// ── Payment Links ────────────────────────────────────────────────────────
+
+export interface ExtractedFamily {
+  family_id: string;
+  parent_name: string;
+  currency: string;
+  lessons: number;
+}
+
+export interface PaymentLinksList {
+  exists: boolean;
+  source?: string;
+  count: number;
+  links: Array<{
+    family_id?: string;
+    parent_name?: string;
+    amount?: number;
+    currency?: string;
+    payment_link?: string;
+    stripe_payment_link_id?: string;
+    includes_previous_months?: string;
+    previous_amount?: number;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
+export interface UnpaidN2Family {
+  parent_name: string;
+  total_amount: number;
+  currency: string;
+}
+
+export interface UnpaidN2Response {
+  success: boolean;
+  families: Record<string, UnpaidN2Family>;
+  month_label?: string;
+  total_rows?: number;
+  error?: string | null;
+}
+
+export interface CreateLinksBody {
+  no_split: boolean;
+  selected_teachers?: string[] | null;
+  payment_method_types?: string[] | null;
+  target_family_ids?: string[] | null;
+  additional_amounts?: Record<string, unknown> | null;
+  skip_if_exists: boolean;
+}
