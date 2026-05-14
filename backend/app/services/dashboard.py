@@ -71,22 +71,114 @@ def summary() -> dict[str, Any]:
 
 # ── Invoice folders ────────────────────────────────────────────────────
 
+def _list_drive_invoice_folders() -> list[dict[str, Any]]:
+    """List folders under Professor_Plus_Data/Factures/<year>/<month>/ on Drive.
+    The legacy storage_manager only does this when is_streamlit_cloud() is true,
+    so we re-implement here for the new backend (which is never on Streamlit Cloud
+    but ALWAYS needs Drive listing — dev local and Railway prod alike).
+    """
+    try:
+        from app.services.yaml_io import _get_drive, _drive_root
+    except Exception:
+        return []
+    drv = _get_drive()
+    root = _drive_root()
+    if not drv or not root:
+        return []
+    try:
+        q = (
+            f"name='Factures' and mimeType='application/vnd.google-apps.folder' "
+            f"and '{root}' in parents and trashed=false"
+        )
+        res = drv.files().list(q=q, fields="files(id,name)").execute()
+        files = res.get("files", [])
+        if not files:
+            return []
+        factures_id = files[0]["id"]
+
+        out: list[dict[str, Any]] = []
+        years = drv.files().list(
+            q=f"'{factures_id}' in parents and trashed=false "
+              f"and mimeType='application/vnd.google-apps.folder'",
+            fields="files(id,name)",
+        ).execute().get("files", [])
+        for year in years:
+            months = drv.files().list(
+                q=f"'{year['id']}' in parents and trashed=false "
+                  f"and mimeType='application/vnd.google-apps.folder'",
+                fields="files(id,name)",
+                pageSize=200,
+            ).execute().get("files", [])
+            for m in months:
+                out.append({
+                    "year": year["name"],
+                    "month": m["name"],
+                    "drive_id": m["id"],
+                    "source": "drive",
+                    "path": None,
+                })
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ Drive folder scan: {exc}")
+        return []
+
+
 def list_invoice_folders() -> list[dict[str, Any]]:
+    """Merge local + Drive folders, dedupe by (year, month), sort newest first."""
+    from datetime import datetime
+
+    folders_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # 1) Local (legacy function does this part regardless of cloud)
     try:
         from scripts.storage_manager import list_invoice_folders as _list
-        folders = _list() or []
-    except Exception:
-        folders = []
-    out: list[dict[str, Any]] = []
-    for f in folders:
-        name = f.get("month") or f.get("name") or ""
-        out.append({
-            "id": name,  # use the month name as a stable ID
-            "month": name,
+        for f in (_list() or []):
+            year = str(f.get("year") or "")
+            month = f.get("month") or f.get("name") or ""
+            folders_map[(year, month)] = {
+                "year": year, "month": month,
+                "source": f.get("source", "local"),
+                "path": f.get("path"),
+                "drive_id": f.get("drive_id"),
+            }
+    except Exception as exc:
+        print(f"⚠️ legacy list_invoice_folders: {exc}")
+
+    # 2) Drive — always scan (new behaviour; required on Railway too)
+    for f in _list_drive_invoice_folders():
+        key = (f["year"], f["month"])
+        existing = folders_map.get(key)
+        if existing:
+            # Already present locally — mark 'both' and keep drive_id
+            existing["source"] = "both"
+            existing["drive_id"] = f.get("drive_id")
+        else:
+            folders_map[key] = f
+
+    # 3) Sort newest first based on the trailing date in the month name
+    def sort_key(f: dict[str, Any]) -> datetime:
+        try:
+            date_part = (f.get("month") or "").split(" - ")[-1]
+            for fmt in ("%d-%m-%Y %Hh%M", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(date_part, fmt)
+                except Exception:
+                    continue
+            return datetime.min
+        except Exception:
+            return datetime.min
+
+    out_list = sorted(folders_map.values(), key=sort_key, reverse=True)
+    return [
+        {
+            "id": f["month"],
+            "month": f["month"],
             "year": f.get("year"),
             "source": f.get("source", "local"),
-        })
-    return out
+            "drive_id": f.get("drive_id"),
+        }
+        for f in out_list
+    ]
 
 
 # ── Payments per folder ────────────────────────────────────────────────
