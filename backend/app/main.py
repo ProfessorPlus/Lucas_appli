@@ -21,6 +21,7 @@ from app.routes import (
     cleanup,
     dashboard,
     diagnostics,
+    edit_invoice,
     extract,
     health,
     invoices,
@@ -66,6 +67,7 @@ app.include_router(sync.router, prefix="/api")
 app.include_router(update_notion_routes.router, prefix="/api")
 app.include_router(cleanup.router, prefix="/api")
 app.include_router(payroll.router, prefix="/api")
+app.include_router(edit_invoice.router, prefix="/api")
 
 
 @app.on_event("startup")

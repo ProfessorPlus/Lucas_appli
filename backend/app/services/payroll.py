@@ -38,9 +38,29 @@ def _extraction_end() -> date | None:
         return None
 
 
+def _zero_hour_notion_profs() -> set[str]:
+    """Profs listed with 0h in Notion 'Profs hors TutorBird' — they must be
+    excluded from the recap (mirrors page_accueil's _get_zero_hour_notion_profs
+    in pages/__init__.py, but works in our non-Streamlit context).
+    """
+    excluded: set[str] = set()
+    try:
+        from app.services.notion import fetch_profs_hors_tb
+        r = fetch_profs_hors_tb()
+        if r.get("success"):
+            for e in r.get("entries", []) or []:
+                if float(e.get("heures_faites") or 0) <= 0:
+                    prof = (e.get("professeur") or "").strip()
+                    if prof:
+                        excluded.add(prof)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ zero-hour Notion profs lookup: {exc}")
+    return excluded
+
+
 def summary(*, auto_chf_target: float | None = None) -> dict[str, Any]:
-    """Compute the prof payroll recap. auto_chf_target adjusts CHF rates
-    so the EUR total reaches a target (Auto-CHF feature)."""
+    """Compute the prof payroll recap. Excludes profs with 0h in Notion
+    (consistency with page_accueil + extract summary)."""
     from scripts.recap_profs import compute_teacher_recap
 
     data = _load_data()
@@ -48,10 +68,12 @@ def summary(*, auto_chf_target: float | None = None) -> dict[str, Any]:
     fe = load_familles_euros()
     ts = load_tarifs_speciaux()
 
-    # auto_chf_target requires re-running with adjusted rates; for now, run normally.
+    excluded = _zero_hour_notion_profs()
+
     recap = compute_teacher_recap(
         data, secrets, fe, ts,
         extraction_end_date=_extraction_end(),
+        excluded_teacher_names=excluded,
     )
 
     teachers = []

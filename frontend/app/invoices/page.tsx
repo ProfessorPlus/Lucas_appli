@@ -71,12 +71,12 @@ export default function InvoicesPage() {
         variant="primary"
         icon={<FileText className="h-6 w-6" />}
         title="Génération des factures"
-        subtitle="PDFs par famille — gère Carole OCTOPUS + multi-mois + AED + cleanup-replace."
+        subtitle="Génère les PDFs facture par famille. Pour éditer une facture déjà existante, utilise plutôt 'Éditer une facture'."
       />
 
       <Tabs defaultValue="generate">
         <TabsList>
-          <TabsTrigger value="generate">Générer batch</TabsTrigger>
+          <TabsTrigger value="generate">Générer</TabsTrigger>
           <TabsTrigger value="regenerate">Régénérer dossier</TabsTrigger>
         </TabsList>
 

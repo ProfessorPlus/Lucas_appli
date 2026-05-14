@@ -179,8 +179,11 @@ def _compute_summary(
         on_log(f"⚠️ Erreur conversion FX : {exc}")
 
     # ── Profs total EUR (réutilise compute_teacher_recap) ──
+    # Exclut les profs à 0h dans Notion hors TutorBird, comme page_accueil le fait,
+    # pour que CA - Profs = Net soit cohérent entre toutes les vues.
     profs_total_eur = 0.0
     try:
+        from app.services.payroll import _zero_hour_notion_profs
         from scripts.recap_profs import compute_teacher_recap
 
         recap = compute_teacher_recap(
@@ -189,6 +192,7 @@ def _compute_summary(
             familles_euros,
             tarifs_speciaux,
             extraction_end_date=extraction_end,
+            excluded_teacher_names=_zero_hour_notion_profs(),
         )
         profs_total_eur = float(recap.get("grand_total", 0))
     except Exception as exc:

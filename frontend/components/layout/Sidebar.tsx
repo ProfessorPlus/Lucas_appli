@@ -17,6 +17,7 @@ import {
   Settings,
   GraduationCap,
   Sparkles,
+  Palette,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +53,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { label: "Liens de paiement", href: "/payment-links", icon: CreditCard },
       { label: "Générer factures", href: "/invoices", icon: FileText },
+      { label: "Éditer une facture", href: "/edit-invoice", icon: Palette },
     ],
   },
   {
