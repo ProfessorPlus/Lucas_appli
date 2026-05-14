@@ -409,7 +409,14 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
             
             lessons = fam.get("lessons", [])
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
-            
+
+            # Carole Tessier (template OCTOPUS) : seulement les leçons Notion
+            # (Profs hors TutorBird) — sinon les profs/heures TutorBird parasitent
+            # la ligne Notion (ex: Imane Berrai à 0h apparaît à tort).
+            _pname_lower = (parent_name or "").lower()
+            if "carole" in _pname_lower and "tessier" in _pname_lower:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             if not lessons_filtered:
                 no_lessons += 1
                 continue
@@ -671,15 +678,37 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
         selected_teachers: Liste des noms de profs à mettre à jour
         callback: Fonction callback(progress, message)
         no_split: Si True, pas de mise à jour des sous-pages profs
-    
+
     Returns:
         dict: {"success": bool, "rows_updated": int, "subpages_updated": int, ...}
     """
-    
+
     def update(progress, message):
         if callback:
             callback(progress, message)
-    
+
+    # ===========================
+    # GARDE-FOU AVANT TOUT APPEL RÉSEAU :
+    # invoice_folder_path doit exister localement.
+    # Streamlit Cloud wipe /tmp à chaque redéploiement → l'appelant doit
+    # re-télécharger depuis Drive avant. Ici on échoue proprement plutôt
+    # que de laisser os.path.exists() exploser sur None.
+    # ===========================
+    if not invoice_folder_path:
+        return {
+            "success": False,
+            "error": "Dossier de factures non spécifié (invoice_folder_path est vide). "
+                     "Sur Streamlit Cloud, télécharge d'abord le dossier depuis Drive "
+                     "puis relance l'opération.",
+        }
+    if not os.path.exists(invoice_folder_path):
+        return {
+            "success": False,
+            "error": f"Dossier de factures introuvable en local : {invoice_folder_path}. "
+                     f"Sur Streamlit Cloud, /tmp est vidé à chaque redéploiement — "
+                     f"il faut re-télécharger depuis Drive.",
+        }
+
     try:
         NOTION_TOKEN = secrets["notion"]["token"]
         DB_PAIEMENTS = secrets["notion"]["paiements_database_id"]
@@ -903,12 +932,12 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             return len(completed)
         
         update(5, "📁 Analyse du dossier de factures...")
-        
+
         # ===========================
         # ÉTAPE 1: Scanner les factures du dossier
         # ===========================
         invoices_found = []
-        
+
         selected_teachers_norm = [normalize_for_match(t) for t in selected_teachers]
         
         # Récupérer les noms des familles sélectionnées
@@ -940,40 +969,62 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                             break
                     
                     if matched_family_id:
-                        # Scanner les PDFs dans ce dossier
+                        # Scanner les PDFs dans ce dossier.
+                        # Le format de nommage est : Facture_<date>_<suffix>.pdf
+                        #   - mode classique : <suffix> = Prof_Name (un PDF par prof)
+                        #   - mode no_split  : <suffix> = Family_Name (un PDF par famille)
+                        # Plutôt que de se fier au flag no_split (qui peut être obsolète
+                        # par rapport aux vrais PDFs sur Drive), on auto-détecte en
+                        # comparant le suffixe au nom de la famille.
+                        family_norm = normalize_for_match(matched_family_name)
                         for pdf_file in os.listdir(folder_path):
-                            if pdf_file.lower().endswith(".pdf"):
-                                # Extraire le nom du prof du fichier
-                                # Format: Facture_2026-02-02_Prof_Name.pdf
-                                parts = pdf_file.replace(".pdf", "").split("_")
-                                if len(parts) >= 3:
-                                    teacher_from_file = " ".join(parts[2:])
-                                    teacher_norm = normalize_for_match(teacher_from_file)
-                                    
-                                    # Vérifier si ce prof est dans la sélection
-                                    is_selected = False
-                                    matched_teacher = None
-                                    for sel_teacher, sel_norm in zip(selected_teachers, selected_teachers_norm):
-                                        score = SequenceMatcher(None, teacher_norm, sel_norm).ratio()
-                                        if score > 0.7:
-                                            is_selected = True
-                                            matched_teacher = sel_teacher
-                                            break
-                                    
-                                    if is_selected:
-                                        # Extraire la date du fichier
-                                        try:
-                                            date_part = parts[1]
-                                            file_date = datetime.strptime(date_part, "%Y-%m-%d")
-                                        except:
-                                            file_date = datetime.min
-                                        
-                                        invoices_found.append({
-                                            "family_id": matched_family_id,
-                                            "family_name": matched_family_name,
-                                            "teacher": matched_teacher,
-                                            "file_date": file_date,
-                                        })
+                            if not pdf_file.lower().endswith(".pdf"):
+                                continue
+
+                            parts = pdf_file.replace(".pdf", "").split("_")
+                            if len(parts) < 3:
+                                continue
+
+                            try:
+                                file_date = datetime.strptime(parts[1], "%Y-%m-%d")
+                            except Exception:
+                                file_date = datetime.min
+
+                            suffix = " ".join(parts[2:])
+                            suffix_norm = normalize_for_match(suffix)
+
+                            # Si le suffixe matche le nom de la famille → no_split
+                            # (un seul PDF par famille, partagé par tous les profs sélectionnés).
+                            family_match_score = SequenceMatcher(None, suffix_norm, family_norm).ratio()
+                            is_no_split_pdf = family_match_score > 0.85 or suffix_norm == family_norm
+
+                            if is_no_split_pdf:
+                                for sel_teacher in selected_teachers:
+                                    invoices_found.append({
+                                        "family_id": matched_family_id,
+                                        "family_name": matched_family_name,
+                                        "teacher": sel_teacher,
+                                        "file_date": file_date,
+                                    })
+                                continue
+
+                            # Sinon, mode classique : le suffixe est un nom de prof
+                            is_selected = False
+                            matched_teacher = None
+                            for sel_teacher, sel_norm in zip(selected_teachers, selected_teachers_norm):
+                                score = SequenceMatcher(None, suffix_norm, sel_norm).ratio()
+                                if score > 0.7:
+                                    is_selected = True
+                                    matched_teacher = sel_teacher
+                                    break
+
+                            if is_selected:
+                                invoices_found.append({
+                                    "family_id": matched_family_id,
+                                    "family_name": matched_family_name,
+                                    "teacher": matched_teacher,
+                                    "file_date": file_date,
+                                })
         
         update(15, f"📄 {len(invoices_found)} facture(s) trouvée(s)")
         
@@ -1091,20 +1142,31 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             fam_id, teacher = key
             fam = data.get(fam_id, {})
             lessons = fam.get("lessons", [])
-            
+
             # Filtrer les absences
             lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
-            
+
+            # Carole Tessier (OCTOPUS) : restreindre aux leçons Notion uniquement,
+            # cohérent avec generate_invoices.py / create_payment_links_no_split.py /
+            # run_update_notion. Sinon les éventuelles leçons TB parasitent le total.
+            _pname_lower = (fam.get("parent_name") or "").lower()
+            if "carole" in _pname_lower and "tessier" in _pname_lower:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             # Calculer le montant pour ce prof
             teacher_norm = normalize_for_match(teacher)
             teacher_total = 0
             teacher_hours = 0
-            
+            matched_students = []
+
             for L in lessons_filtered:
                 if SequenceMatcher(None, normalize_for_match(L.get("teacher", "")), teacher_norm).ratio() > 0.7:
                     teacher_total += float(L.get("amount", 0) or 0)
                     teacher_hours += (L.get("duration_min") or 0) / 60
-            
+                    student = (L.get("student") or "").strip()
+                    if student and student not in matched_students:
+                        matched_students.append(student)
+
             if teacher_total > 0:
                 family_totals[fam_id]["amount"] += teacher_total
                 family_totals[fam_id]["hours"] += teacher_hours
@@ -1115,6 +1177,11 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     "hours": teacher_hours,
                     "date_cours": inv["file_date"].strftime("%Y-%m-%d") if inv["file_date"] != datetime.min else None
                 })
+                # Élèves des leçons matchées (pour rafraîchir Élève sur Carole)
+                existing_students = family_totals[fam_id].setdefault("students", [])
+                for s in matched_students:
+                    if s not in existing_students:
+                        existing_students.append(s)
         
         total_families = len(family_totals)
         current = 0
@@ -1139,7 +1206,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             
             if row:
                 page_id = row["id"]
-                
+
                 # Mettre à jour la ligne famille
                 properties = {
                     amount_prop_name: {"number": round(totals["amount"], 2)},
@@ -1147,7 +1214,22 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                     # Marquer que la facture a été modifiée avec la date de régénération
                     "Invoice Date modified": {"date": {"start": datetime.today().strftime("%Y-%m-%d")}},
                 }
-                
+
+                # Carole Tessier (OCTOPUS) : rafraîchir aussi Professeur et Élève
+                # car la première écriture (run_update_notion avant fix Carole)
+                # contient des profs parasites (Imane Berrai 0h, "Tessier" en élève).
+                # On NE le fait PAS pour les autres familles : si l'utilisateur a
+                # sélectionné un sous-ensemble de profs, on n'écraserait pas les
+                # autres profs de la famille.
+                _fname_lower = (family_name or "").lower()
+                if "carole" in _fname_lower and "tessier" in _fname_lower:
+                    profs_list = [t["teacher"] for t in totals.get("teachers", []) if t.get("teacher")]
+                    if profs_list:
+                        properties["Professeur"] = {"rich_text": [{"text": {"content": ", ".join(profs_list)}}]}
+                    students_list = totals.get("students", [])
+                    if students_list:
+                        properties["Élève"] = {"rich_text": [{"text": {"content": ", ".join(students_list)}}]}
+
                 result = notion_request("PATCH", f"pages/{page_id}", {"properties": properties})
                 
                 if result:

@@ -399,6 +399,10 @@ with st.sidebar:
     if st.button("📄 Générer factures", key="nav_invoices", width="stretch"):
         st.session_state.current_page = "invoices"
         st.rerun()
+
+    if st.button("🎨 Éditer une facture", key="nav_edit_invoice", width="stretch"):
+        st.session_state.current_page = "edit_invoice"
+        st.rerun()
     
     st.markdown('<p class="section-label">📧 COMMUNICATION</p>', unsafe_allow_html=True)
     
@@ -447,7 +451,8 @@ with st.sidebar:
 from pages import (
     page_accueil, page_extract, page_twint, page_cleanup,
     page_payment, page_invoices, page_send, page_reminders,
-    page_sync, page_update, page_config, page_profs
+    page_sync, page_update, page_config, page_profs,
+    page_edit_invoice,
 )
 
 # ===========================
@@ -485,6 +490,8 @@ elif page == "payment":
     page_payment(ctx)
 elif page == "invoices":
     page_invoices(ctx)
+elif page == "edit_invoice":
+    page_edit_invoice(ctx)
 elif page == "send":
     page_send(ctx)
 elif page == "reminders":

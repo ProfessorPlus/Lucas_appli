@@ -182,10 +182,19 @@ def _next_invoice_number(counter_root, invoice_date):
 
 def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                        parent_name, logo_path, counter_root, today, is_notion_custom=False,
-                       previous_items=None, previous_month_label=None):
+                       previous_items=None, previous_month_label=None,
+                       custom_billing_address=None, invoice_number_override=None,
+                       custom_package_label=None):
     """
     Génère un PDF de facture.
-    
+
+    Args (overrides utilisés par l'éditeur de facture) :
+        custom_billing_address: texte multi-ligne pour "Facturer à"
+            (override l'adresse OCTOPUS / parent_name)
+        invoice_number_override: numéro de facture custom (sinon auto via compteur)
+        custom_package_label: libellé custom du Package (mode is_notion_custom)
+            (sinon "1 Package FORMATION Anglais")
+
     Args:
         output_path: chemin du fichier PDF
         items: liste de {"date": datetime, "description": str, "amount": float}
@@ -224,8 +233,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
         canvas.setFillColor(colors.white)
         canvas.setFont(FONT_BOLD, 11)
-        tagline = "Soutien" if is_notion_custom else "Soutien scolaire sur-mesure"
-        canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
+        tagline = "" if is_notion_custom else "Soutien scolaire sur-mesure"
+        if tagline:
+            canvas.drawString(LEFT + 5 * mm, y + bar_h/2 - 4, tagline)
 
         canvas.setFont(FONT_SANS, 10)
         txt = "Facture"
@@ -255,12 +265,32 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     st_header = ParagraphStyle(name="th", fontName=FONT_BOLD, fontSize=12, alignment=TA_CENTER, textColor=colors.white)
 
     date_str = today.strftime("%d.%m.%Y")
-    inv_number = _next_invoice_number(counter_root, today)
+    inv_number = invoice_number_override if invoice_number_override else _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
-    tagline_text = "Soutien" if is_notion_custom else TAGLINE_LEFT
-    left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
-    middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
+    if custom_billing_address:
+        # Éditeur : adresse "Facturer à" personnalisée multi-ligne.
+        # Pas de tagline à gauche (style packagé).
+        left_band = Paragraph("", st_sub)
+        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        addr_html = "<b>Facturer à :</b><br/>" + custom_billing_address.replace("\n", "<br/>")
+        middle_band = Paragraph(addr_html, st_addr_mid)
+    elif is_notion_custom:
+        # Carole / Notion custom : pas de tagline, adresse OCTOPUS dans "Facturer à"
+        left_band = Paragraph("", st_sub)  # Vide à gauche
+        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        middle_band = Paragraph(
+            "<b>Facturer à :</b><br/>"
+            "OCTOPUS SARL<br/>"
+            "C/o CATS BUSINESS CENTER<br/>"
+            "28 bd Princesse Charlotte<br/>"
+            "98 000 MONACO",
+            st_addr_mid,
+        )
+    else:
+        tagline_text = TAGLINE_LEFT
+        left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
+        middle_band = Paragraph(f"<b>Facturer à :</b><br/>{parent_name}", st_facturer)
 
     avail = A4[0] - LEFT - RIGHT
     left_w = 58 * mm
@@ -282,21 +312,22 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     # TABLEAU
     if is_notion_custom:
-        # Custom: pas de colonne Date
+        # Custom Carole : pas de colonne Date, pas de détail cours, juste Package
         data_tbl = [
             [
                 Paragraph("Description", st_header),
                 Paragraph("Frais", st_header),
             ]
         ]
-        
-        for item in items:
-            desc_cell = item["description"]
-            amt_cell = f'{item["amount"]:.2f} {currency}'
-            data_tbl.append([
-                Paragraph(desc_cell, ParagraphStyle(name="c", fontName=FONT_SANS, fontSize=10)),
-                Paragraph(amt_cell, ParagraphStyle(name="r", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_GREEN)),
-            ])
+
+        # Ligne unique : 1 Package FORMATION Anglais / Professionnel
+        # (libellé override-able via custom_package_label depuis l'éditeur)
+        st_package = ParagraphStyle(name="pkg", fontName=FONT_BOLD, fontSize=10)
+        st_package_frais = ParagraphStyle(name="pkgf", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=BRAND_BLUE)
+        data_tbl.append([
+            Paragraph(custom_package_label or "1 Package FORMATION Anglais", st_package),
+            Paragraph("Professionnel", st_package_frais),
+        ])
         
         # Ajouter les cours impayés des mois précédents (notion custom)
         if previous_items:
@@ -393,7 +424,10 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
         pass  # prev_separator_row_idx is a local variable
     if previous_items:
         # Find the separator row index — it's after current items + header
-        sep_idx = 1 + len(items)  # 1 for header row
+        if is_notion_custom:
+            sep_idx = 2  # header(0) + package(1) → separator at 2
+        else:
+            sep_idx = 1 + len(items)  # 1 for header row
         tbl_style_cmds.append(("BACKGROUND", (0, sep_idx), (-1, sep_idx), colors.Color(1.0, 0.95, 0.93)))
         tbl_style_cmds.append(("TOPPADDING", (0, sep_idx), (-1, sep_idx), 12))
         tbl_style_cmds.append(("BOTTOMPADDING", (0, sep_idx), (-1, sep_idx), 12))
@@ -595,7 +629,12 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             
             parent_name = fam.get("parent_name") or fam.get("family_name") or "Parent"
             update(progress, f"📄 {parent_name} ({current}/{total_families})")
-            
+
+            # Détection Carole Tessier (template OCTOPUS) — par nom uniquement,
+            # robuste à la fusion Notion↔TutorBird (qui inverse prénom/nom et écrase source).
+            _pname_lower = (parent_name or "").lower()
+            is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
+
             currency = "EUR" if fam_id in families_in_euros else "CHF"
             # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
             fam_currency = (fam.get("currency") or "").upper()
@@ -610,7 +649,12 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     cours_non_factures += 1
                     continue
                 lessons_filtered.append(L)
-            
+
+            # Pour Carole (OCTOPUS) : ne retenir que les leçons Notion (Profs hors TutorBird)
+            # → le total reflète uniquement les heures saisies dans Notion.
+            if is_notion_custom:
+                lessons_filtered = [L for L in lessons_filtered if L.get("source") == "notion_hors_tb"]
+
             if not lessons_filtered:
                 continue
             
@@ -687,8 +731,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 filename = f"Facture_{year_str}-{today.strftime('%m-%d')}_{clean_str(parent_name.replace(' ', '_'))}.pdf"
                 output_path = os.path.join(fam_base_dir, filename)
                 
-                # Générer le PDF
-                is_notion_custom = fam.get("source") == "notion_hors_tb"
+                # Générer le PDF (is_notion_custom calculé en amont)
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,

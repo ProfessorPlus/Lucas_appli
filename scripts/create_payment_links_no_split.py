@@ -223,6 +223,14 @@ def run_create_payment_links_no_split(
                     continue
                 billable_lessons.append(L)
 
+            # Carole Tessier (template OCTOPUS) : ne retenir que les leçons Notion
+            # (Profs hors TutorBird) afin que le total et les profs reflètent uniquement
+            # les heures saisies dans Notion.
+            _pname_lower = (parent_name or "").lower()
+            is_carole_octopus = ("carole" in _pname_lower and "tessier" in _pname_lower)
+            if is_carole_octopus:
+                billable_lessons = [L for L in billable_lessons if L.get("source") == "notion_hors_tb"]
+
             total_amount = sum(float(L.get("amount") or 0) for L in billable_lessons)
             
             # Ajouter les montants impayés des mois précédents
@@ -239,7 +247,13 @@ def run_create_payment_links_no_split(
                 continue
 
             total_cents = int(round(total_amount * 100))
-            product_name = build_product_name(billable_lessons)
+            # Carole : titre Stripe forcé "Package FORMATION" (sans "|") pour le PDF OCTOPUS.
+            # Le webhook (no_prof_sync_stripe_notion.py) matche par montant+date,
+            # prof/élève sont des filtres soft : compatible.
+            if is_carole_octopus:
+                product_name = "Package FORMATION"
+            else:
+                product_name = build_product_name(billable_lessons)
             teacher_names = collect_teacher_names(fam, billable_lessons)
             teacher_label = " / ".join(teacher_names) if teacher_names else "— (compte principal)"
             source_label = (
