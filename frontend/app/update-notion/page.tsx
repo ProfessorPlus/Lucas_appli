@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Upload, Loader2, Search, Plus, RefreshCw } from "lucide-react";
+import { useMemo } from "react";
 import { toast } from "sonner";
 
 import { api, type InvoiceFolder, type ExtractedFamily } from "@/lib/api";
@@ -11,7 +12,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 export default function UpdateNotionPage() {
   const [folders, setFolders] = useState<InvoiceFolder[]>([]);
@@ -23,6 +26,23 @@ export default function UpdateNotionPage() {
   const [scanning, setScanning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [search, setSearch] = useState("");
+  const [currencyFilter, setCurrencyFilter] = useState<string>("ALL");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return families.filter((f) => {
+      if (currencyFilter !== "ALL" && f.currency !== currencyFilter) return false;
+      if (q && !f.parent_name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [families, search, currencyFilter]);
+
+  const currencyCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const f of families) c[f.currency] = (c[f.currency] || 0) + 1;
+    return c;
+  }, [families]);
 
   useEffect(() => {
     api.get<InvoiceFolder[]>("/invoice-folders").then((f) => {
@@ -122,22 +142,74 @@ export default function UpdateNotionPage() {
                 className="mb-3 h-10 w-full rounded-lg border border-border bg-card px-3 text-sm">
                 {folders.map((f) => <option key={f.id} value={f.month}>{f.month}</option>)}
               </select>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Rechercher une famille…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  {(["ALL", "EUR", "CHF", "AED"] as const).map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setCurrencyFilter(c)}
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                        currencyFilter === c
+                          ? "border-accent bg-accent/10 text-accent"
+                          : "border-border bg-card text-muted-foreground hover:bg-secondary",
+                      )}
+                    >
+                      {c === "ALL" ? "Toutes" : c}
+                      {c !== "ALL" && currencyCounts[c] !== undefined && (
+                        <span className="ml-1 opacity-60">({currencyCounts[c]})</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="overflow-hidden rounded-lg border border-border max-h-80 overflow-y-auto">
                 <table className="w-full text-sm">
                   <tbody>
-                    {families.map((f) => (
-                      <tr key={f.family_id} className="border-t border-border">
-                        <td className="p-2 w-10">
-                          <Checkbox checked={selected.has(f.family_id)} onCheckedChange={(c) => {
-                            const next = new Set(selected);
-                            if (c) next.add(f.family_id); else next.delete(f.family_id);
-                            setSelected(next);
-                          }} />
+                    {filtered.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="p-6 text-center text-sm text-muted-foreground">
+                          Aucune famille ne correspond aux filtres.
                         </td>
-                        <td className="p-2 font-medium">{f.parent_name}</td>
-                        <td className="p-2 text-right tabular-nums text-muted-foreground">{f.lessons}l</td>
                       </tr>
-                    ))}
+                    ) : filtered.map((f) => {
+                      const curStyle = {
+                        EUR: "bg-primary/10 text-primary",
+                        CHF: "bg-[#3B82F6]/10 text-[#3B82F6]",
+                        AED: "bg-[#F59E0B]/10 text-[#F59E0B]",
+                      }[f.currency] || "bg-secondary text-muted-foreground";
+                      return (
+                        <tr key={f.family_id} className="border-t border-border">
+                          <td className="p-2 w-10">
+                            <Checkbox checked={selected.has(f.family_id)} onCheckedChange={(c) => {
+                              const next = new Set(selected);
+                              if (c) next.add(f.family_id); else next.delete(f.family_id);
+                              setSelected(next);
+                            }} />
+                          </td>
+                          <td className="p-2 font-medium">{f.parent_name}</td>
+                          <td className="p-2 text-right tabular-nums text-muted-foreground">{f.lessons}l</td>
+                          <td className="p-2 text-center">
+                            <span
+                              className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide", curStyle)}
+                              title={f.currency_source ? `source: ${f.currency_source}` : undefined}
+                            >
+                              {f.currency}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

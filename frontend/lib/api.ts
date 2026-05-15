@@ -290,7 +290,10 @@ export interface ExtractedFamily {
   family_id: string;
   parent_name: string;
   currency: string;
+  /** How `currency` was determined (notion / family.currency / familles_euros.yaml / default-CHF) */
+  currency_source?: string;
   lessons: number;
+  amount?: number;
 }
 
 export interface PaymentLinksList {

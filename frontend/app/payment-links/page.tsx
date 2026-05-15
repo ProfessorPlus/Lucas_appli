@@ -11,6 +11,7 @@ import {
   XCircle,
   CircleDot,
   ExternalLink,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -55,6 +56,8 @@ export default function PaymentLinksPage() {
 
   // Tab 2 — Regenerate
   const [selectedForRegen, setSelectedForRegen] = useState<Set<string>>(new Set());
+  const [regenSearch, setRegenSearch] = useState("");
+  const [regenCurrencyFilter, setRegenCurrencyFilter] = useState<string>("ALL");
 
   // Submit
   const [submitting, setSubmitting] = useState(false);
@@ -119,6 +122,22 @@ export default function PaymentLinksPage() {
     [stripeStatuses],
   );
   const stripeActive = stripeStatuses.filter((s) => s.status === "active").length;
+
+  // Filtered families for regenerate tab
+  const filteredFamilies = useMemo(() => {
+    const q = regenSearch.trim().toLowerCase();
+    return families.filter((f) => {
+      if (regenCurrencyFilter !== "ALL" && f.currency !== regenCurrencyFilter) return false;
+      if (q && !f.parent_name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [families, regenSearch, regenCurrencyFilter]);
+
+  const currencyCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const f of families) c[f.currency] = (c[f.currency] || 0) + 1;
+    return c;
+  }, [families]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -309,46 +328,107 @@ export default function PaymentLinksPage() {
                 Les anciens liens Stripe seront désactivés et remplacés par les nouveaux.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              {/* Search + currency chips */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Rechercher une famille…"
+                    value={regenSearch}
+                    onChange={(e) => setRegenSearch(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  {(["ALL", "EUR", "CHF", "AED"] as const).map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setRegenCurrencyFilter(c)}
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                        regenCurrencyFilter === c
+                          ? "border-accent bg-accent/10 text-accent"
+                          : "border-border bg-card text-muted-foreground hover:bg-secondary",
+                      )}
+                    >
+                      {c === "ALL" ? "Toutes" : c}
+                      {c !== "ALL" && currencyCounts[c] !== undefined && (
+                        <span className="ml-1 opacity-60">({currencyCounts[c]})</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="overflow-hidden rounded-lg border border-border">
                 <table className="w-full text-sm">
                   <thead className="bg-secondary/50 text-xs uppercase tracking-wide text-muted-foreground">
                     <tr>
                       <th className="w-10 p-3">
                         <Checkbox
-                          checked={selectedForRegen.size === families.length && families.length > 0}
+                          checked={
+                            filteredFamilies.length > 0 &&
+                            filteredFamilies.every((f) => selectedForRegen.has(f.family_id))
+                          }
                           onCheckedChange={(c) => {
-                            if (c) setSelectedForRegen(new Set(families.map((f) => f.family_id)));
-                            else setSelectedForRegen(new Set());
+                            const next = new Set(selectedForRegen);
+                            for (const f of filteredFamilies) {
+                              if (c) next.add(f.family_id);
+                              else next.delete(f.family_id);
+                            }
+                            setSelectedForRegen(next);
                           }}
                         />
                       </th>
                       <th className="p-3 text-left font-semibold">Famille</th>
                       <th className="p-3 text-right font-semibold">Leçons</th>
+                      <th className="p-3 text-right font-semibold">Montant</th>
                       <th className="p-3 text-center font-semibold">Devise</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {families.map((f) => (
-                      <tr key={f.family_id} className="border-t border-border">
-                        <td className="p-3">
-                          <Checkbox
-                            checked={selectedForRegen.has(f.family_id)}
-                            onCheckedChange={(c) => {
-                              const next = new Set(selectedForRegen);
-                              if (c) next.add(f.family_id);
-                              else next.delete(f.family_id);
-                              setSelectedForRegen(next);
-                            }}
-                          />
-                        </td>
-                        <td className="p-3 font-medium">{f.parent_name}</td>
-                        <td className="p-3 text-right tabular-nums">{f.lessons}</td>
-                        <td className="p-3 text-center">
-                          {f.currency && <Badge variant="secondary" className="text-[10px]">{f.currency}</Badge>}
+                    {filteredFamilies.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="p-6 text-center text-sm text-muted-foreground">
+                          Aucune famille ne correspond aux filtres.
                         </td>
                       </tr>
-                    ))}
+                    ) : filteredFamilies.map((f) => {
+                      const curStyle = {
+                        EUR: "bg-primary/10 text-primary",
+                        CHF: "bg-[#3B82F6]/10 text-[#3B82F6]",
+                        AED: "bg-[#F59E0B]/10 text-[#F59E0B]",
+                      }[f.currency] || "bg-secondary text-muted-foreground";
+                      return (
+                        <tr key={f.family_id} className="border-t border-border">
+                          <td className="p-3">
+                            <Checkbox
+                              checked={selectedForRegen.has(f.family_id)}
+                              onCheckedChange={(c) => {
+                                const next = new Set(selectedForRegen);
+                                if (c) next.add(f.family_id);
+                                else next.delete(f.family_id);
+                                setSelectedForRegen(next);
+                              }}
+                            />
+                          </td>
+                          <td className="p-3 font-medium">{f.parent_name}</td>
+                          <td className="p-3 text-right tabular-nums">{f.lessons}</td>
+                          <td className="p-3 text-right tabular-nums text-muted-foreground">
+                            {f.amount !== undefined ? f.amount.toFixed(2) : "—"}
+                          </td>
+                          <td className="p-3 text-center">
+                            <span
+                              className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide", curStyle)}
+                              title={f.currency_source ? `source: ${f.currency_source}` : undefined}
+                            >
+                              {f.currency}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

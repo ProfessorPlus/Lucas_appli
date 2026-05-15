@@ -187,21 +187,64 @@ def teachers_stripe_status() -> list[dict[str, Any]]:
     return out
 
 
+def _effective_currency_for_family(fam: dict[str, Any], euro_parents_normalized: set[str]) -> str:
+    """Same rule as page_accueil/extract: if any Notion-sourced lesson has a
+    devise_client, that wins; else family.currency if set; else EUR if the
+    parent is in familles_euros.yaml; else CHF default."""
+    from scripts.update_notion import normalize_name
+
+    # 1) Notion lessons carry per-lesson currencies — pick the dominant one
+    notion_currencies: dict[str, int] = {}
+    for L in fam.get("lessons", []) or []:
+        if L.get("source") == "notion_hors_tb":
+            c = (L.get("notion_devise_client") or "").upper()
+            if c:
+                notion_currencies[c] = notion_currencies.get(c, 0) + 1
+    if notion_currencies:
+        return max(notion_currencies.items(), key=lambda x: x[1])[0]
+
+    # 2) Family-level explicit currency
+    famcur = (fam.get("currency") or "").upper()
+    if famcur:
+        return famcur
+
+    # 3) familles_euros.yaml override
+    parent = fam.get("parent_name") or fam.get("family_name") or ""
+    if normalize_name(parent) in euro_parents_normalized:
+        return "EUR"
+
+    # 4) Default
+    return "CHF"
+
+
 def get_extracted_families() -> list[dict[str, Any]]:
-    """For the regenerate tab — return families currently in the extract."""
+    """For the regenerate / selection tabs — return families currently in the
+    extract with the EFFECTIVE currency (never empty)."""
+    from scripts.update_notion import normalize_name
+
     try:
         data = _load_extracted_data()
     except RuntimeError:
         return []
+
+    fe = load_familles_euros()
+    euro_norm = {normalize_name(n) for n in fe}
+
     out = []
     for fam_id, fam in data.items():
+        lessons = [L for L in (fam.get("lessons") or []) if L.get("attendance_status") != "AbsentNotice"]
+        amount = sum(float(L.get("amount") or 0) for L in lessons)
         out.append({
             "family_id": fam_id,
             "parent_name": fam.get("parent_name") or fam.get("family_name") or fam_id,
-            "currency": (fam.get("currency") or "").upper(),
-            "lessons": len([
-                L for L in fam.get("lessons", [])
-                if L.get("attendance_status") != "AbsentNotice"
-            ]),
+            "currency": _effective_currency_for_family(fam, euro_norm),
+            "currency_source": (
+                "notion" if fam.get("source") == "notion_hors_tb"
+                else "family.currency" if (fam.get("currency") or "")
+                else "familles_euros.yaml" if normalize_name(fam.get("parent_name") or "") in euro_norm
+                else "default-CHF"
+            ),
+            "lessons": len(lessons),
+            "amount": round(amount, 2),
         })
     return sorted(out, key=lambda f: f["parent_name"].lower())
