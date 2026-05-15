@@ -41,7 +41,13 @@ _drive_config_folder_id: str | None = None
 
 
 def _get_drive():
-    """Lazily build a Drive client from the service account JSON at project root."""
+    """Lazily build a Drive client.
+
+    Resolution order (first match wins):
+      1. GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 env var (Railway-friendly)
+      2. GOOGLE_SERVICE_ACCOUNT_JSON env var (raw JSON)
+      3. Service account JSON file at project root (dev mode)
+    """
     global _drive_service
     if _drive_service is not None:
         return _drive_service
@@ -50,14 +56,49 @@ def _get_drive():
         from googleapiclient.discovery import build
     except ImportError:
         return None
-    sa_path = PROJECT_ROOT / "google_service_account.json.json"
-    if not sa_path.exists():
-        sa_path = PROJECT_ROOT / "google_service_account.json"
-    if not sa_path.exists():
+
+    import base64
+    import json as _json
+    import os as _os
+
+    SCOPES = ["https://www.googleapis.com/auth/drive"]
+    creds = None
+
+    # 1. Base64-encoded JSON env var (recommended for cloud deploys)
+    raw_b64 = _os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64")
+    if raw_b64:
+        try:
+            info = _json.loads(base64.b64decode(raw_b64).decode())
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        except Exception as exc:
+            print(f"⚠️ Bad GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: {exc}")
+
+    # 2. Raw JSON env var
+    if creds is None:
+        raw_json = _os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if raw_json:
+            try:
+                info = _json.loads(raw_json)
+                creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+            except Exception as exc:
+                print(f"⚠️ Bad GOOGLE_SERVICE_ACCOUNT_JSON: {exc}")
+
+    # 3. File on disk (dev)
+    if creds is None:
+        for fname in ("google_service_account.json.json", "google_service_account.json"):
+            sa_path = PROJECT_ROOT / fname
+            if sa_path.exists():
+                try:
+                    creds = service_account.Credentials.from_service_account_file(
+                        str(sa_path), scopes=SCOPES
+                    )
+                except Exception as exc:
+                    print(f"⚠️ Bad service account file {fname}: {exc}")
+                break
+
+    if creds is None:
         return None
-    creds = service_account.Credentials.from_service_account_file(
-        str(sa_path), scopes=["https://www.googleapis.com/auth/drive"]
-    )
+
     _drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
     return _drive_service
 

@@ -20,18 +20,10 @@ from datetime import datetime
 # also loads in non-Streamlit contexts (the FastAPI backend).
 try:
     import streamlit as st  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover
+except ImportError:  # pragma: no cover — reuse the env-aware shim from config_loader
+    from scripts.config_loader import st  # type: ignore[no-redef]
 
-    class _StSecretsShim:
-        def get(self, key, default=None):
-            return default
-
-        def __contains__(self, key):
-            return False
-
-        def __getitem__(self, key):
-            raise KeyError(key)
-
+    # session_state isn't provided by config_loader's shim; add a dict-like one here.
     class _StSessionShim(dict):
         def __setattr__(self, k, v):
             self[k] = v
@@ -42,11 +34,11 @@ except ImportError:  # pragma: no cover
             except KeyError:
                 raise AttributeError(k)
 
-    class _StShim:
-        secrets = _StSecretsShim()
-        session_state = _StSessionShim()
-
-    st = _StShim()  # type: ignore[assignment]
+    if not hasattr(st, "session_state"):
+        try:
+            st.session_state = _StSessionShim()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 # Google Drive API
 from google.oauth2 import service_account

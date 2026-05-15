@@ -21,23 +21,78 @@ import os
 import io
 
 # Streamlit is optional: this module is also imported by the FastAPI backend
-# where streamlit is not installed. We shim `st` so `st.secrets[...]` lookups
-# return nothing and the code falls through to local-file loading.
+# where streamlit is not installed. We shim `st.secrets[...]` to read from
+# environment variables when needed (Railway / Vercel deployments), so the
+# legacy Drive helpers keep working without a local secrets.toml file.
 try:
     import streamlit as st  # type: ignore[import-not-found]
     HAS_STREAMLIT = True
 except ImportError:  # pragma: no cover — non-Streamlit context (FastAPI, scripts CLI)
+    import base64 as _b64
+    import json as _json
+
     HAS_STREAMLIT = False
+
+    def _service_account_from_env():
+        """Resolve a service account dict from env vars. Used on Railway."""
+        # 1. Base64-encoded JSON (recommended for Railway env vars — avoids quoting hell)
+        raw_b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64")
+        if raw_b64:
+            try:
+                return _json.loads(_b64.b64decode(raw_b64).decode())
+            except Exception:
+                pass
+        # 2. Raw JSON string (might break if special chars not escaped)
+        raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if raw_json:
+            try:
+                return _json.loads(raw_json)
+            except Exception:
+                pass
+        # 3. Path to a JSON file (dev mode, points to google_service_account.json.json)
+        sa_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+        if sa_path and os.path.exists(sa_path):
+            try:
+                with open(sa_path, "r", encoding="utf-8") as fh:
+                    return _json.load(fh)
+            except Exception:
+                pass
+        return None
 
     class _StSecretsShim:
         def get(self, key, default=None):
+            if key == "google_service_account":
+                return _service_account_from_env() or default
+            if key == "google_drive":
+                root_id = os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_ID")
+                if root_id:
+                    return {"root_folder_id": root_id}
+                return default
+            if key == "google_oauth":
+                client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+                if client_id:
+                    return {
+                        "client_id": client_id,
+                        "client_secret": os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+                        "refresh_token": os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN", ""),
+                    }
+                return default
             return default
 
         def __contains__(self, key):
+            if key == "google_service_account":
+                return _service_account_from_env() is not None
+            if key == "google_drive":
+                return bool(os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_ID"))
+            if key == "google_oauth":
+                return bool(os.environ.get("GOOGLE_OAUTH_CLIENT_ID"))
             return False
 
         def __getitem__(self, key):
-            raise KeyError(key)
+            val = self.get(key)
+            if val is None:
+                raise KeyError(key)
+            return val
 
     class _StShim:
         secrets = _StSecretsShim()
@@ -60,18 +115,32 @@ except ImportError:
 # ===========================
 
 def is_streamlit_cloud():
-    """Détecte si on est sur Streamlit Cloud.
+    """Détecte un environnement "sans système de fichiers persistant"
+    qui doit lire/écrire les configs et données via Google Drive.
 
-    Note: la condition cwd-based historique (`not os.path.exists('config/secrets.yaml')`)
-    a été retirée — elle renvoyait `True` quand l'app était lancée depuis un
-    sous-dossier (ex: backend/), ce qui forçait un load Drive impossible. Les
-    env-vars Streamlit Cloud + le path `/mount/src` sont des signaux fiables.
+    Reconnu :
+      - Streamlit Cloud (env vars STREAMLIT_*, path /mount/src)
+      - Railway / Vercel / autre PaaS quand PROFPLUS_CLOUD_MODE=true
+      - Détection auto : si on a un GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 ET
+        pas de config/secrets.yaml local → on est en prod sans fichier
     """
-    return (
+    if (
         os.environ.get("STREAMLIT_SHARING_MODE") == "true"
         or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
         or os.path.exists("/mount/src")
+        or os.environ.get("PROFPLUS_CLOUD_MODE") == "true"
+        or os.environ.get("RAILWAY_ENVIRONMENT")  # any value
+    ):
+        return True
+    has_sa_env = bool(
+        os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64")
+        or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     )
+    has_local_secrets = (
+        os.path.exists("config/secrets.yaml")
+        or os.path.exists("secrets.yaml")
+    )
+    return has_sa_env and not has_local_secrets
 
 
 def get_data_dir():
