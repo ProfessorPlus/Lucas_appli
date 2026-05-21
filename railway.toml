@@ -6,8 +6,11 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+# startCommand intentionnellement omis : Railway exécute le CMD du Dockerfile
+# qui passe par sh -c et résout correctement ${PORT}. Si on remet un
+# startCommand ici, il faut le wrapper en `sh -c '...'` sinon $PORT est passé
+# en littéral à uvicorn et il plante avec "Invalid value for '--port'".
 healthcheckPath = "/api/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
