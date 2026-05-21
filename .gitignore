@@ -13,8 +13,17 @@ config/*.yaml
 data/
 Factures/
 invoice_counters/
-*.json
-!package.json
+# JSON dans dossiers de données — pas un blanket *.json (sinon ça ignore
+# aussi tsconfig.json, .vscode/*.json, etc., et Vercel n'arrive plus à
+# résoudre les path aliases dans le frontend Next.js).
+data/*.json
+invoice_counters/**/*.json
+*.local.json
+# Google service account JSON (sensible, ne JAMAIS commit)
+google_service_account.json
+google_service_account.json.json
+config/google_service_account.json
+**/google_service_account*.json
 
 # =========================
 # 🐍 PYTHON
