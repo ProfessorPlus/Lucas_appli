@@ -4665,7 +4665,8 @@ def page_edit_invoice(ctx):
             key="edit_inv_num",
         )
     with col3:
-        cur_options = ["EUR", "CHF"]
+        # AED ajouté pour les familles Notion hors TutorBird en dirham émirati (Aseelah).
+        cur_options = ["EUR", "CHF", "AED"]
         cur_cur = (f.get("currency") or "EUR").upper()
         cur_idx = cur_options.index(cur_cur) if cur_cur in cur_options else 0
         f["currency"] = st.selectbox("Devise", cur_options, index=cur_idx, key="edit_inv_cur")

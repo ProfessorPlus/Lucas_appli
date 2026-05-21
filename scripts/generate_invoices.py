@@ -636,9 +636,11 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
 
             currency = "EUR" if fam_id in families_in_euros else "CHF"
-            # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
+            # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion).
+            # AED inclus : Aseelah a fam.currency='aed' dans Notion ; sans AED ici sa facture
+            # tombait par défaut sur CHF (bug rapporté 2026-05-21).
             fam_currency = (fam.get("currency") or "").upper()
-            if fam_currency in ("EUR", "CHF"):
+            if fam_currency in ("EUR", "CHF", "AED"):
                 currency = fam_currency
             
             # Filtrer les absences
