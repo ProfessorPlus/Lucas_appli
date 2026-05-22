@@ -80,7 +80,7 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="hidden h-screen w-[280px] flex-col bg-sidebar-gradient text-sidebar-foreground md:flex">
+    <aside className="sticky top-0 hidden h-screen w-[280px] flex-col self-start bg-sidebar-gradient text-sidebar-foreground md:flex">
       {/* Logo */}
       <div className="flex items-center gap-3 border-b border-sidebar-border/60 px-6 py-5">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-gradient text-white shadow-lg shadow-accent/20">
