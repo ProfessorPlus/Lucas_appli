@@ -151,10 +151,18 @@ def fetch_notion_profs(secrets):
             details_heures = _get_text(p.get("Détails heures", {}), "rich_text")
             langue = _get_text(p.get("Langue", {}), "rich_text") or _get_text(p.get("Langue", {}), "select") or ""
             language = "en" if str(langue).strip().lower() in {"anglais", "english", "en"} else "fr"
-            
+            # Colonne 'Mois' (texte ou select) : nom du mois durant lequel les cours
+            # ont été effectués, ex 'Mai'. Utilisée sur la fiche de paie pour afficher
+            # 'Mai 2026' au lieu de la date de fetch (qui n'a aucun sens pour Notion).
+            mois_label = (
+                _get_text(p.get("Mois", {}), "rich_text")
+                or _get_text(p.get("Mois", {}), "select")
+                or ""
+            )
+
             if not famille and not professeur:
                 continue
-            
+
             entries.append({
                 "page_id": row["id"],
                 "famille": famille,
@@ -169,6 +177,7 @@ def fetch_notion_profs(secrets):
                 "email_prof": email_prof,
                 "details_heures": details_heures,
                 "language": language,
+                "mois_label": mois_label,
             })
         
         return {"success": True, "entries": entries, "error": None}
@@ -224,6 +233,7 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
             "notion_devise_client": entry["devise_client"],
             "notion_taux_client": taux_client,
             "notion_details_heures": entry.get("details_heures", ""),
+            "notion_mois_label": entry.get("mois_label", ""),
         }
         
         if safe_id in families:
@@ -271,6 +281,7 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                     "notion_devise_client": entry["devise_client"],
                     "notion_taux_client": 0,
                     "notion_details_heures": details_str,
+                    "notion_mois_label": entry.get("mois_label", ""),
                 }
                 families[safe_id]["lessons"].append(frais_lesson)
                 families[safe_id]["total_courses"] += frais_amount

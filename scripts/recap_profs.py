@@ -400,8 +400,19 @@ def compute_teacher_recap(
                 
                 teacher_totals[t_name]["nb_lessons"] += 1
                 teacher_totals[t_name]["total_hours"] += hours
+                # Pour Notion hors TB : afficher "Mai 2026" au lieu de la date
+                # de fetch (qui n'a aucun sens — c'est juste today()). Source :
+                # colonne Notion "Mois" + année prise sur extraction_end_date
+                # (ou today si non fournie).
+                _mois_lbl = (lesson.get("notion_mois_label") or "").strip()
+                if _mois_lbl:
+                    _ref = _to_date(extraction_end_date)
+                    _year = _ref.year if _ref else datetime.today().year
+                    date_display = f"{_mois_lbl} {_year}"
+                else:
+                    date_display = lesson.get("date", "")
                 teacher_totals[t_name]["details"].append({
-                    "date": lesson.get("date", ""),
+                    "date": date_display,
                     "student": lesson.get("student", ""),
                     "family_parent": parent,
                     "currency": currency_label,
