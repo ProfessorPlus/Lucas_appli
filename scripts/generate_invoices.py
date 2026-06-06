@@ -361,12 +361,16 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     if not is_notion_custom:
         for item in items:
-            date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
+            # Si l'item porte un date_display (ex 'Mai 2026' pour Notion hors TB),
+            # on l'utilise tel quel. Sinon strftime classique sur la date brute.
+            date_cell = item.get("date_display") or (
+                item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
+            )
             desc_cell = item["description"]
             amt = float(item["amount"])
             amount_cell = f"{amt:.2f} {currency}"
             data_tbl.append([date_cell, desc_cell, amount_cell])
-        
+
         # Ajouter les cours impayés des mois précédents
         if previous_items:
             separator_label = previous_month_label or "mois précédent(s)"
@@ -382,7 +386,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                 "",
             ])
             for prev_item in previous_items:
-                date_cell = prev_item["date"].strftime("%d.%m.%Y") if prev_item["date"] != datetime.min else ""
+                date_cell = prev_item.get("date_display") or (
+                    prev_item["date"].strftime("%d.%m.%Y") if prev_item["date"] != datetime.min else ""
+                )
                 desc_cell = prev_item["description"]
                 amt = float(prev_item["amount"])
                 amount_cell = f"{amt:.2f} {currency}"
@@ -695,7 +701,15 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
-                    items.append({"date": d, "description": desc, "amount": amt})
+                    # Pour Notion hors TB : afficher "Mai 2026" au lieu de la
+                    # date de fetch (qui n'a aucun sens — c'est juste today()).
+                    # Année prise sur today (invoice date).
+                    _mois_lbl = (L.get("notion_mois_label") or "").strip()
+                    date_display = f"{_mois_lbl} {today.year}" if _mois_lbl else None
+                    item = {"date": d, "description": desc, "amount": amt}
+                    if date_display:
+                        item["date_display"] = date_display
+                    items.append(item)
                 
                 if total_due <= 0:
                     continue
@@ -716,10 +730,15 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                             student = L.get("student", "")
                             teacher = L.get("teacher", "Professeur")
                             duration = L.get("duration_min", "")
-                            desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                            desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                             amt = float(L.get("amount", 0) or 0)
                             total_due += amt
-                            prev_items_for_fam.append({"date": d, "description": desc, "amount": amt})
+                            # Idem main loop : date affichée 'Mai 2026' si Notion hors TB.
+                            _mois_lbl = (L.get("notion_mois_label") or "").strip()
+                            prev_item = {"date": d, "description": desc, "amount": amt}
+                            if _mois_lbl:
+                                prev_item["date_display"] = f"{_mois_lbl} {today.year}"
+                            prev_items_for_fam.append(prev_item)
                 
                 total_due_display = f"{total_due:.2f} {currency}"
                 
