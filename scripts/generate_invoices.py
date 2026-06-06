@@ -689,7 +689,10 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     student = L.get("student", "")
                     teacher = L.get("teacher", "Professeur")
                     duration = L.get("duration_min", "")
-                    desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                    # Si la leçon porte une description override (ex: "Frais de
+                    # déplacement" injectée par fetch_notion_profs), on l'utilise
+                    # telle quelle au lieu du format "Cours avec ... pour ...".
+                    desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
                     items.append({"date": d, "description": desc, "amount": amt})

@@ -4311,7 +4311,7 @@ def page_profs(ctx):
             safe_name = tname.replace(" ", "_")
             filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
 
-            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end)
+            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
             col_dl, col_send = st.columns(2)
             with col_dl:
                 st.download_button(
@@ -4366,7 +4366,7 @@ def page_profs(ctx):
             else:
                 sent = 0
                 for p in profs_with_email:
-                    pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                    pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
                     fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
                     ok = _send_prof_pdf(secrets, p["name"], test_email, pdf_b, fname, mois_label, silent=True)
                     if ok:
@@ -4378,7 +4378,7 @@ def page_profs(ctx):
             sent = 0
             errors = []
             for p in profs_with_email:
-                pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
                 fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
                 ok = _send_prof_pdf(secrets, p["name"], p["email"], pdf_b, fname, mois_label, silent=True)
                 if ok:
@@ -4406,6 +4406,7 @@ def page_profs(ctx):
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
                     extraction_end_date=extraction_end,
+                    teachers_cfg=secrets.get("teachers", {}),
                 )
                 if zip_bytes:
                     st.session_state.prof_zip_bytes = zip_bytes
@@ -4420,6 +4421,7 @@ def page_profs(ctx):
                     teachers, mois_label,
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
+                    teachers_cfg=secrets.get("teachers", {}),
                     extraction_end_date=extraction_end,
                 )
                 if pdf_bytes:

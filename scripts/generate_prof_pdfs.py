@@ -156,8 +156,13 @@ def _circle(c, cx, cy, r, fill):
 # PAGE BUILDER
 # ===========================
 
-def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source):
-    """Draw one complete teacher recap, spanning multiple pages if needed."""
+def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source, teacher_cfg=None):
+    """Draw one complete teacher recap, spanning multiple pages if needed.
+
+    teacher_cfg: optional dict from secrets.yaml.teachers[teacher_name]. If it
+    contains 'legal_name' and/or 'siren', they are displayed as a discreet line
+    under the metric cards (page 1 only) for legal/billing transparency.
+    """
     
     total_eur_raw = data.get("eur", 0) + data.get("chf_as_eur", 0)
     nb_lessons = data.get("nb_lessons", 0)
@@ -311,8 +316,29 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
                     c.drawString(cx + 14, y - card_h + 18, val)
                 cx += w + gap
             
-            y -= card_h + 30
-            
+            y -= card_h
+
+            # ─────────────────────────────
+            # LEGAL INFO LINE (if cfg provides legal_name / siren)
+            # Ex: "Émise au nom de : Hafssa ZANDAR  •  SIREN 103990792"
+            # ─────────────────────────────
+            legal_parts = []
+            if teacher_cfg:
+                _ln = (teacher_cfg.get("legal_name") or "").strip()
+                _sir = (teacher_cfg.get("siren") or "").strip()
+                if _ln:
+                    legal_parts.append(f"Émise au nom de : {_ln}")
+                if _sir:
+                    legal_parts.append(f"SIREN {_sir}")
+            if legal_parts:
+                y -= 14
+                c.setFillColor(TXT_LIGHT)
+                c.setFont(F, 9)
+                c.drawString(MX, y, "  •  ".join(legal_parts))
+                y -= 16
+            else:
+                y -= 30
+
             # ─────────────────────────────
             # SECTION TITLE: "Détail des leçons"
             # ─────────────────────────────
@@ -457,17 +483,31 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
 # PUBLIC API
 # ===========================
 
-def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None, extraction_end_date=None):
+def _cfg_for(teachers_cfg, teacher_name):
+    """Lookup teacher config (case/space tolerant)."""
+    if not teachers_cfg:
+        return None
+    if teacher_name in teachers_cfg:
+        return teachers_cfg[teacher_name]
+    # tolerate light variations
+    norm = teacher_name.lower().strip()
+    for k, v in teachers_cfg.items():
+        if k.lower().strip() == norm:
+            return v
+    return None
+
+
+def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None, extraction_end_date=None, teachers_cfg=None):
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
     buf = io.BytesIO()
     cv = canvas.Canvas(buf, pagesize=A4)
-    _build_page(cv, teacher_name, data, mois_label, logo_path, rate, source)
+    _build_page(cv, teacher_name, data, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, teacher_name))
     cv.save()
     buf.seek(0)
     return buf.getvalue()
 
 
-def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None):
+def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None, teachers_cfg=None):
     import zipfile
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
     zbuf = io.BytesIO()
@@ -480,7 +520,7 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
                 continue
             buf = io.BytesIO()
             cv = canvas.Canvas(buf, pagesize=A4)
-            _build_page(cv, tname, d, mois_label, logo_path, rate, source)
+            _build_page(cv, tname, d, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, tname))
             cv.save()
             buf.seek(0)
             safe = tname.replace(" ", "_")
@@ -489,7 +529,7 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
     return zbuf.getvalue()
 
 
-def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None):
+def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None, teachers_cfg=None):
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
     buf = io.BytesIO()
     cv = canvas.Canvas(buf, pagesize=A4)
@@ -503,7 +543,7 @@ def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclu
         if not first:
             cv.showPage()
         first = False
-        _build_page(cv, tname, d, mois_label, logo_path, rate, source)
+        _build_page(cv, tname, d, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, tname))
     if not first:
         cv.save()
         buf.seek(0)

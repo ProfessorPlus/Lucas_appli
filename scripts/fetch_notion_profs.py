@@ -15,9 +15,19 @@ Colonnes Notion attendues :
 - email client (email)
 """
 
+import re
 import time as _time
 import requests
 from datetime import datetime
+
+
+# Pattern : "Ajouter 15 euros de frais de déplacement", insensible casse/accents.
+# Captures la valeur numérique (int ou décimal avec , ou .). Cherché dans la
+# colonne Notion "Détails heures" pour ajouter un supplément au total facturé.
+_FRAIS_DEP_PATTERN = re.compile(
+    r"\bajouter\s+(\d+(?:[.,]\d+)?)\s*(?:eur(?:os?)?|€)\s+(?:de\s+)?frais\s+de\s+d[ée]placement\b",
+    re.IGNORECASE,
+)
 
 
 REQUEST_DELAY = 0.25
@@ -232,5 +242,37 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                 "currency": entry["devise_client"].lower(),
                 "language": entry.get("language", "fr"),
             }
-    
+
+        # Frais de déplacement : parsing "Ajouter X euros de frais de déplacement"
+        # dans la colonne Notion "Détails heures". Si match, on ajoute une
+        # leçon-supplément distincte (visible en ligne dédiée sur le PDF,
+        # comprise dans le total facturé et dans le lien Stripe).
+        details_str = entry.get("details_heures", "") or ""
+        m_frais = _FRAIS_DEP_PATTERN.search(details_str)
+        if m_frais:
+            try:
+                frais_amount = float(m_frais.group(1).replace(",", "."))
+            except ValueError:
+                frais_amount = 0.0
+            if frais_amount > 0:
+                frais_lesson = {
+                    "date": datetime.today().strftime("%d.%m.%Y"),
+                    "time": "00:00",
+                    "student": entry["eleve"],
+                    "teacher": prof,
+                    "duration_min": 0,
+                    "amount": frais_amount,
+                    "attendance_status": "Present",
+                    "source": "notion_hors_tb",
+                    "is_fee": True,
+                    "description_override": "Frais de déplacement",
+                    "notion_taux_prof": 0,
+                    "notion_devise_prof": entry["devise_prof"],
+                    "notion_devise_client": entry["devise_client"],
+                    "notion_taux_client": 0,
+                    "notion_details_heures": details_str,
+                }
+                families[safe_id]["lessons"].append(frais_lesson)
+                families[safe_id]["total_courses"] += frais_amount
+
     return families
