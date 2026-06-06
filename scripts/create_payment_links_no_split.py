@@ -232,14 +232,30 @@ def run_create_payment_links_no_split(
                 billable_lessons = [L for L in billable_lessons if L.get("source") == "notion_hors_tb"]
 
             total_amount = sum(float(L.get("amount") or 0) for L in billable_lessons)
-            
+
             # Ajouter les montants impayés des mois précédents
             prev_amount = 0.0
             if additional_amounts and fam_id in additional_amounts:
                 prev_amount = float(additional_amounts[fam_id])
                 total_amount += prev_amount
-            
+
+            # Crédit Notion (colonne 'Credit' table Profs hors TutorBird) : on
+            # déduit du total avant création du lien Stripe. Si le crédit couvre
+            # tout (-> total_amount <= 0), on skippe la création du lien : la
+            # famille n'a rien à payer ce mois-ci.
+            credit_avail_link = float(fam.get("notion_credit_available") or 0)
+            credit_applied_link = 0.0
+            if credit_avail_link > 0 and total_amount > 0:
+                credit_applied_link = min(credit_avail_link, total_amount)
+                total_amount -= credit_applied_link
+                print(
+                    f"   💳 Crédit Notion appliqué pour {parent_name} : "
+                    f"-{credit_applied_link:.2f} {currency.upper()} "
+                    f"(solde initial {credit_avail_link:.2f}, reste à payer {total_amount:.2f})"
+                )
+
             if total_amount <= 0:
+                print(f"   ⏭️  {parent_name} : rien à payer (crédit couvre tout), pas de lien Stripe créé")
                 continue
 
             # Skip si déjà créé (utilise le montant CUMULÉ)

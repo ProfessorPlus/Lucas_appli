@@ -184,7 +184,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                        parent_name, logo_path, counter_root, today, is_notion_custom=False,
                        previous_items=None, previous_month_label=None,
                        custom_billing_address=None, invoice_number_override=None,
-                       custom_package_label=None):
+                       custom_package_label=None, credit_info=None):
     """
     Génère un PDF de facture.
 
@@ -328,7 +328,22 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
             Paragraph(custom_package_label or "1 Package FORMATION Anglais", st_package),
             Paragraph("Professionnel", st_package_frais),
         ])
-        
+
+        # Ligne 'Crédit utilisé' (mode OCTOPUS) si un crédit est appliqué.
+        # credit_info = {'used': float, 'initial': float, 'currency': str}
+        if credit_info and float(credit_info.get("used") or 0) > 0:
+            _cred_used = float(credit_info["used"])
+            _cred_initial = float(credit_info.get("initial") or _cred_used)
+            _cred_currency = credit_info.get("currency") or "EUR"
+            _fr_initial = f"{_cred_initial:,.2f}".replace(",", " ").replace(".", ",")
+            _fr_used = f"-{_cred_used:,.2f}".replace(",", " ").replace(".", ",")
+            st_credit_desc = ParagraphStyle(name="cred_d", fontName=FONT_SANS, fontSize=10, textColor=colors.Color(0.4, 0.4, 0.4))
+            st_credit_val = ParagraphStyle(name="cred_v", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=colors.Color(0.6, 0.2, 0.2))
+            data_tbl.append([
+                Paragraph(f"Crédit utilisé (solde initial : {_fr_initial} {_cred_currency})", st_credit_desc),
+                Paragraph(f"{_fr_used} {_cred_currency}", st_credit_val),
+            ])
+
         # Ajouter les cours impayés des mois précédents (notion custom)
         if previous_items:
             separator_label = previous_month_label or "mois précédent(s)"
@@ -739,13 +754,38 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                             if _mois_lbl:
                                 prev_item["date_display"] = f"{_mois_lbl} {today.year}"
                             prev_items_for_fam.append(prev_item)
-                
+
+                # ===========================
+                # CRÉDIT NOTION : déduire du total facturé
+                # ===========================
+                # Si la famille a un crédit utilisable (colonne 'Credit' Notion),
+                # on le déduit du total dû. Si le crédit couvre tout, total = 0.
+                # Une ligne 'Crédit utilisé' est ajoutée aux items pour
+                # transparence. Le lien Stripe pointe vers example.com si plus
+                # rien à payer (ne sera pas affiché côté UI dans ce cas).
+                credit_avail = float(fam.get("notion_credit_available") or 0)
+                credit_used = 0.0
+                if credit_avail > 0 and total_due > 0:
+                    credit_used = min(credit_avail, total_due)
+                    total_due -= credit_used
+                    # Format français du montant : '2 321,28' au lieu de '2,321.28'
+                    _fr_initial = f"{credit_avail:,.2f}".replace(",", " ").replace(".", ",")
+                    # Ligne de transparence dans le tableau (sauf si OCTOPUS : la
+                    # ligne crédit est ajoutée à part dans le path is_notion_custom
+                    # car les items ne sont pas rendus dans ce mode).
+                    if not is_notion_custom:
+                        items.append({
+                            "date": datetime.min,
+                            "description": f"Crédit utilisé (solde initial : {_fr_initial} {currency})",
+                            "amount": -credit_used,
+                        })
+
                 total_due_display = f"{total_due:.2f} {currency}"
-                
+
                 # Lien no-split
                 no_split_key = (fam_id, "__no_split__")
                 pay_link_url = links_map.get(no_split_key)
-                
+
                 if pay_link_url:
                     liens_trouves += 1
                 else:
@@ -756,12 +796,20 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF (is_notion_custom calculé en amont)
+                _credit_info = None
+                if credit_used > 0:
+                    _credit_info = {
+                        "used": credit_used,
+                        "initial": credit_avail,
+                        "currency": currency,
+                    }
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,
                     is_notion_custom=is_notion_custom,
                     previous_items=prev_items_for_fam if prev_items_for_fam else None,
                     previous_month_label=previous_month_label,
+                    credit_info=_credit_info,
                 )
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     factures_generees += 1

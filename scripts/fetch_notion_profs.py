@@ -30,6 +30,40 @@ _FRAIS_DEP_PATTERN = re.compile(
 )
 
 
+def _parse_french_amount(text):
+    """Parse un montant au format français (ex '2 321,28 €') ou anglais.
+
+    Tolère : espace insécable, virgule décimale, point milliers, suffixes ('€',
+    'disponible au 1er mai'). Retourne 0.0 si rien trouvé.
+    """
+    if not text:
+        return 0.0
+    s = str(text)
+    m = re.search(r"\d[\d\s .,]*", s)
+    if not m:
+        return 0.0
+    raw = m.group(0).strip(" .,")
+    cleaned = raw.replace(" ", "").replace(" ", "")
+    # Décide quel séparateur est décimal
+    if "," in cleaned and "." in cleaned:
+        last_comma = cleaned.rfind(",")
+        last_dot = cleaned.rfind(".")
+        if last_comma > last_dot:
+            # ex '2.321,28' -> virgule décimale, points milliers
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            # ex '2,321.28' -> point décimal, virgules milliers
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        # ex '2321,28' -> virgule décimale
+        cleaned = cleaned.replace(",", ".")
+    # sinon : que des points ou rien -> déjà bon
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
 REQUEST_DELAY = 0.25
 
 
@@ -159,6 +193,12 @@ def fetch_notion_profs(secrets):
                 or _get_text(p.get("Mois", {}), "select")
                 or ""
             )
+            # Colonne 'Credit' (texte) : crédit disponible pour cette famille
+            # (ex pour Carole : '2 321,28 € disponible au 1er mai'). Le montant
+            # parsé est appliqué au total facturé pour réduire ce que doit la
+            # famille. Persiste mois en mois jusqu'à mise à jour manuelle dans Notion.
+            credit_text = _get_text(p.get("Credit", {}), "rich_text")
+            credit_amount = _parse_french_amount(credit_text)
 
             if not famille and not professeur:
                 continue
@@ -178,6 +218,8 @@ def fetch_notion_profs(secrets):
                 "details_heures": details_heures,
                 "language": language,
                 "mois_label": mois_label,
+                "credit_text": credit_text,
+                "credit_amount": credit_amount,
             })
         
         return {"success": True, "entries": entries, "error": None}
@@ -252,6 +294,20 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                 "currency": entry["devise_client"].lower(),
                 "language": entry.get("language", "fr"),
             }
+
+        # Crédit famille : on prend le max sur toutes les lignes de la famille
+        # (si la cliente a plusieurs profs en Notion, le crédit est dupliqué sur
+        # chaque ligne — max évite le double comptage).
+        _entry_credit = float(entry.get("credit_amount") or 0)
+        if _entry_credit > 0:
+            families[safe_id]["notion_credit_available"] = max(
+                float(families[safe_id].get("notion_credit_available") or 0),
+                _entry_credit,
+            )
+            # Aussi conserver le libellé brut pour transparence (ex 'disponible au 1er mai')
+            _ct = entry.get("credit_text", "")
+            if _ct and not families[safe_id].get("notion_credit_text"):
+                families[safe_id]["notion_credit_text"] = _ct
 
         # Frais de déplacement : parsing "Ajouter X euros de frais de déplacement"
         # dans la colonne Notion "Détails heures". Si match, on ajoute une
