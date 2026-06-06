@@ -3634,6 +3634,8 @@ def page_config(ctx):
                         "EUR/h": float(t_data.get("pay_rate", {}).get("eur", 0)),
                         "Auto CHF": auto_chf,
                         "Stripe Connect ID": t_data.get("connect_account_id") or "",
+                        "Nom légal": t_data.get("legal_name") or "",
+                        "SIREN": t_data.get("siren") or "",
                         "Supprimer": False
                     })
                 
@@ -3671,6 +3673,16 @@ def page_config(ctx):
                         "Stripe Connect ID": st.column_config.TextColumn(
                             "🔗 Stripe Connect ID",
                             width="large"
+                        ),
+                        "Nom légal": st.column_config.TextColumn(
+                            "📛 Nom légal",
+                            help="Nom légal apparaissant sur la fiche de paie (ex: 'Hafssa ZANDAR'). Laisser vide pour utiliser le nom du prof.",
+                            width="medium"
+                        ),
+                        "SIREN": st.column_config.TextColumn(
+                            "🆔 SIREN",
+                            help="N° SIREN affiché sur la fiche de paie (9 chiffres). Laisser vide si non applicable.",
+                            width="small"
                         ),
                         "Supprimer": st.column_config.CheckboxColumn(
                             "🗑️",
@@ -3713,6 +3725,17 @@ def page_config(ctx):
                                 teachers[name]["pay_rate"]["eur"] = eur_rate
                                 teachers[name]["auto_chf"] = is_auto
                                 teachers[name]["connect_account_id"] = (row["Stripe Connect ID"] or "").strip()
+                                # Nom légal + SIREN : on enregistre si rempli, on enlève la clé si vidée
+                                _ln = (row.get("Nom légal") or "").strip()
+                                _sir = (row.get("SIREN") or "").strip()
+                                if _ln:
+                                    teachers[name]["legal_name"] = _ln
+                                else:
+                                    teachers[name].pop("legal_name", None)
+                                if _sir:
+                                    teachers[name]["siren"] = _sir
+                                else:
+                                    teachers[name].pop("siren", None)
                         
                         secrets["teachers"] = teachers
                         ctx["save_secrets"](secrets)
