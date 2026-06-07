@@ -413,17 +413,25 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
                 student = student[:20] + "…"
             c.drawString(rx + 12, ry, student)
             rx += cols[1]
-            
+
+            # Détection ligne "frais" : pas de durée ni de taux significatif
+            # → on affiche '—' au lieu de '0 min' et '0.00 €/h' pour ne pas
+            # polluer la lisibilité.
+            is_fee_row = bool(d.get("is_fee"))
+
             # Durée
             dur = d.get("duration_min", 0)
-            tot_min += dur
-            c.drawString(rx + 12, ry, f"{dur} min")
+            if not is_fee_row:
+                tot_min += dur
+            c.drawString(rx + 12, ry, "—" if is_fee_row else f"{dur} min")
             rx += cols[2]
-            
+
             # Taux horaire
             rate = d.get("rate", 0)
             cur = d.get("currency", "")
-            if "CHF" in cur:
+            if is_fee_row:
+                taux = "—"
+            elif "CHF" in cur:
                 taux = f"{rate:,.2f} CHF/h"
             else:
                 taux = f"{rate:,.2f} €/h"
