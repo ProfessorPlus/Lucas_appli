@@ -138,6 +138,72 @@ def _update_metadata(secrets, key_name, value=None, date_value=None):
         print(f"⚠️ Metadata update failed for {key_name}: {e}")
 
 
+def _refresh_notion_credit_on_data(data, secrets=None):
+    """Rafraîchit le crédit Notion des familles hors TutorBird depuis l'état actuel.
+
+    Le crédit est persisté dans full_output_tb_SIMPLE.json au moment de l'extraction.
+    Si l'utilisateur modifie la colonne 'Credit' dans Notion après extraction sans
+    ré-extraire, les factures utilisent une valeur périmée. Ce helper met à jour
+    les crédits des familles Notion à partir de session_state.notion_profs_data
+    (rafraîchi via le bouton 'Rafraîchir depuis Notion' de la page Extraction).
+
+    - Lazy fetch : si session_state.notion_profs_data est vide, on fetch Notion.
+    - Agrégation MAX par famille (comme convert_notion_profs_to_families).
+    - Si la colonne Credit est vidée dans Notion, on retire la clé sur data pour
+      que la facture soit générée sans la ligne 'Crédit utilisé'.
+    """
+    if not data:
+        return
+    if "notion_profs_data" not in st.session_state and secrets:
+        try:
+            from scripts.fetch_notion_profs import fetch_notion_profs
+            res = fetch_notion_profs(secrets)
+            if res.get("success"):
+                st.session_state.notion_profs_data = res.get("entries", [])
+        except Exception:
+            pass
+
+    entries = st.session_state.get("notion_profs_data", []) or []
+    if not entries:
+        return
+
+    from scripts.fetch_notion_profs import _parse_french_amount
+
+    fresh_credit_by_family = {}
+    fresh_credit_text_by_family = {}
+    for e in entries:
+        fam_name = (e.get("famille") or "").strip()
+        if not fam_name:
+            continue
+        credit_text = e.get("credit_text", "") or ""
+        credit_amt = _parse_french_amount(credit_text)
+        # MAX (agrégation multi-lignes)
+        if credit_amt > fresh_credit_by_family.get(fam_name, 0.0):
+            fresh_credit_by_family[fam_name] = credit_amt
+            fresh_credit_text_by_family[fam_name] = credit_text
+
+    for fam_id, fam in data.items():
+        if fam.get("source") != "notion_hors_tb":
+            continue
+        parent = (fam.get("parent_name") or "").strip()
+        # On chercher aussi par match tolérant sur family_name
+        candidates = [parent, (fam.get("family_name") or "").strip()]
+        fresh = 0.0
+        fresh_text = ""
+        for cand in candidates:
+            if cand in fresh_credit_by_family:
+                fresh = fresh_credit_by_family[cand]
+                fresh_text = fresh_credit_text_by_family.get(cand, "")
+                break
+        if fresh > 0:
+            fam["notion_credit_available"] = fresh
+            fam["notion_credit_text"] = fresh_text
+        else:
+            # Colonne Credit vidée dans Notion -> on retire les clés
+            fam.pop("notion_credit_available", None)
+            fam.pop("notion_credit_text", None)
+
+
 def _get_zero_hour_notion_profs(secrets=None):
     """Retourne le set des profs listés à 0h dans 'Profs hors TutorBird' Notion.
 
@@ -1372,6 +1438,8 @@ def page_payment(ctx):
                     st.error("❌ secrets_no_prof.yaml manquant !")
                     result = None
                 else:
+                    # Rafraîchir crédit Notion depuis l'état actuel avant création des liens.
+                    _refresh_notion_credit_on_data(data, secrets)
                     result = run_create_payment_links_no_split(
                         data, secrets_no_prof, familles_euros,
                         ctx["DATA_DIR"], callback,
@@ -1471,6 +1539,8 @@ def page_payment(ctx):
                     if not secrets_no_prof_t2:
                         st.error("❌ secrets_no_prof.yaml manquant !")
                     else:
+                        # Rafraîchir crédit Notion depuis l'état actuel avant création des liens.
+                        _refresh_notion_credit_on_data(data, secrets)
                         result = run_create_payment_links_no_split(
                             data, secrets_no_prof_t2, familles_euros,
                             ctx["DATA_DIR"], callback,
@@ -1535,6 +1605,10 @@ def page_payment(ctx):
                         status.info(m)
                     
                     filtered_data = {fid: fam for fid, fam in data.items() if fid in regen_fam_ids}
+                    # Rafraîchir crédit Notion depuis l'état actuel (Notion peut avoir
+                    # changé depuis l'extraction — si l'utilisateur a vidé la colonne
+                    # 'Credit', on n'applique plus le crédit).
+                    _refresh_notion_credit_on_data(filtered_data, secrets)
                     result = run_generate_invoices(
                         filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                         target_folder_path=target_folder_path,
@@ -1969,6 +2043,8 @@ def page_invoices(ctx):
                     st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
                     return
 
+            # Rafraîchir crédit Notion depuis l'état actuel avant génération.
+            _refresh_notion_credit_on_data(data, secrets)
             result = run_generate_invoices(
                 data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                 target_folder_path=target_folder_path,
@@ -2066,6 +2142,8 @@ def page_invoices(ctx):
                     status.info(m)
 
                 filtered_data = {fid: fam for fid, fam in data.items() if fid in selected_family_ids}
+                # Rafraîchir crédit Notion depuis l'état actuel avant génération.
+                _refresh_notion_credit_on_data(filtered_data, secrets)
                 result = run_generate_invoices(
                     filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                     target_folder_path=selected_folder_path,
