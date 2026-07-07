@@ -164,13 +164,22 @@ def _get_zero_hour_notion_profs(secrets=None):
             print(f"⚠️ Lazy fetch Notion profs hors TB échoué : {_e}")
             st.session_state.notion_profs_data = []
 
+    # On exclut un prof UNIQUEMENT si TOUTES ses entrées Notion sont à 0h.
+    # Sinon un prof comme Romain Queille (une entrée à 6h pour Pinelli + une
+    # à 0h pour Odelia Cohen — juste la ligne 'Ajouter 15€ frais') disparaît
+    # totalement du récap alors qu'il devrait apparaître avec ses 6h réelles.
     excluded = set()
     try:
+        prof_hours = {}  # {nom_prof: [heures_par_entree, ...]}
         for e in st.session_state.get("notion_profs_data", []) or []:
-            if float(e.get("heures_faites") or 0) <= 0:
-                prof = (e.get("professeur") or "").strip()
-                if prof:
-                    excluded.add(prof)
+            prof = (e.get("professeur") or "").strip()
+            if not prof:
+                continue
+            h = float(e.get("heures_faites") or 0)
+            prof_hours.setdefault(prof, []).append(h)
+        for prof, hours_list in prof_hours.items():
+            if all(h <= 0 for h in hours_list):
+                excluded.add(prof)
     except Exception:
         pass
     return excluded
