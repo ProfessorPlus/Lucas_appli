@@ -268,25 +268,30 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = invoice_number_override if invoice_number_override else _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
+    #
+    # Note : pour les modes 'Éditeur' (custom_billing_address) et 'Carole
+    # OCTOPUS' (is_notion_custom), l'adresse Facturer à est placée dans la
+    # colonne GAUCHE — alignée verticalement sous le logo Professor+ — pour
+    # que le bloc soit visuellement bien collé au bord gauche. Sinon (mode
+    # standard TB), le nom du parent reste au centre à côté de la tagline.
     if custom_billing_address:
-        # Éditeur : adresse "Facturer à" personnalisée multi-ligne.
-        # Pas de tagline à gauche (style packagé).
-        left_band = Paragraph("", st_sub)
-        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        # Éditeur : adresse "Facturer à" personnalisée multi-ligne, alignée gauche.
+        st_addr_left = ParagraphStyle(name="addr_left", fontName=FONT_SANS, fontSize=9, leading=12)
         addr_html = "<b>Facturer à :</b><br/>" + custom_billing_address.replace("\n", "<br/>")
-        middle_band = Paragraph(addr_html, st_addr_mid)
+        left_band = Paragraph(addr_html, st_addr_left)
+        middle_band = Paragraph("", st_sub)
     elif is_notion_custom:
-        # Carole / Notion custom : pas de tagline, adresse OCTOPUS dans "Facturer à"
-        left_band = Paragraph("", st_sub)  # Vide à gauche
-        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
-        middle_band = Paragraph(
+        # Carole / Notion custom : adresse OCTOPUS alignée gauche sous le logo.
+        st_addr_left = ParagraphStyle(name="addr_left", fontName=FONT_SANS, fontSize=9, leading=12)
+        left_band = Paragraph(
             "<b>Facturer à :</b><br/>"
             "OCTOPUS SARL<br/>"
             "C/o CATS BUSINESS CENTER<br/>"
             "28 bd Princesse Charlotte<br/>"
             "98 000 MONACO",
-            st_addr_mid,
+            st_addr_left,
         )
+        middle_band = Paragraph("", st_sub)
     else:
         tagline_text = TAGLINE_LEFT
         left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
