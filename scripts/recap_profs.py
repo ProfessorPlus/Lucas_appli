@@ -21,7 +21,13 @@ from functools import lru_cache
 import requests
 
 
-PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}
+PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}  # deprecated, gardé pour compat
+
+# Règle métier : si le client est facturé (statut != AbsentNotice), le prof est payé.
+# Doit rester aligné avec STATUTS_NON_FACTURES dans generate_invoices.py — sinon
+# on facture le client sans payer le prof (ex: statuts TB "AbsentBillable" etc.
+# passaient la facture mais étaient silencieusement ignorés cote paie).
+STATUTS_NON_PAYABLES = {"AbsentNotice"}
 
 # ===========================
 # FX CHF → EUR + générique (AED, etc.)
@@ -365,7 +371,10 @@ def compute_teacher_recap(
 
         for lesson in fam.get("lessons", []):
             status = lesson.get("attendance_status", "")
-            if status not in PAYABLE_STATUSES:
+            # Alignement avec la facture client : on paie le prof pour tout
+            # ce qui est facturé au client (exclusion uniquement des statuts
+            # explicitement non-facturables).
+            if status in STATUTS_NON_PAYABLES:
                 continue
 
             t_name = lesson.get("teacher") or ""
