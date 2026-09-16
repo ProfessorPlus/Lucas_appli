@@ -27,13 +27,16 @@ def list_teachers() -> list[dict[str, Any]]:
                 "pay_rate_chf": float(pr.get("chf", 0) or 0),
                 "pay_rate_eur": float(pr.get("eur", 0) or 0),
                 "auto_chf": bool(cfg.get("auto_chf", False)),
+                "legal_name": cfg.get("legal_name", "") or "",
+                "siren": cfg.get("siren", "") or "",
             }
         )
     return sorted(out, key=lambda t: t["name"].lower())
 
 
 def create_teacher(name: str, *, connect_account_id: str = "", pay_rate_chf: float = 0,
-                   pay_rate_eur: float = 0, auto_chf: bool = False) -> dict[str, Any]:
+                   pay_rate_eur: float = 0, auto_chf: bool = False,
+                   legal_name: str = "", siren: str = "") -> dict[str, Any]:
     if not name or not name.strip():
         raise ValueError("Teacher name is required")
     name = name.strip()
@@ -45,6 +48,9 @@ def create_teacher(name: str, *, connect_account_id: str = "", pay_rate_chf: flo
         "connect_account_id": connect_account_id,
         "pay_rate": {"chf": float(pay_rate_chf), "eur": float(pay_rate_eur)},
         "auto_chf": bool(auto_chf),
+        # Affiches sur la fiche de paie PDF ("Emise au nom de : X  •  SIREN Y").
+        "legal_name": (legal_name or "").strip(),
+        "siren": (siren or "").strip(),
     }
     _save_secrets(secrets)
     return {"name": name, **teachers[name]}
@@ -65,6 +71,10 @@ def update_teacher(name: str, **fields) -> dict[str, Any]:
         pr["eur"] = float(fields["pay_rate_eur"])
     if "auto_chf" in fields:
         entry["auto_chf"] = bool(fields["auto_chf"])
+    if "legal_name" in fields:
+        entry["legal_name"] = (fields["legal_name"] or "").strip()
+    if "siren" in fields:
+        entry["siren"] = (fields["siren"] or "").strip()
     teachers[name] = entry
     _save_secrets(secrets)
     return {"name": name, **entry}

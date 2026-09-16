@@ -18,7 +18,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 
-from app.services.config import load_secrets
+from app.services.config import load_secrets, load_secrets_no_prof
 from app.services.paths import PROJECT_ROOT, ensure_scripts_on_path, get_data_dir
 
 ensure_scripts_on_path()
@@ -174,6 +174,8 @@ def load_invoice(folder_name: str, family: str, pdf_filename: str) -> dict[str, 
 def empty_fields() -> dict[str, Any]:
     return {
         "parent_name": "",
+        "teacher_name": "",
+        "student_name": "",
         "billing_address": "",
         "parent_email": "",
         "invoice_date": datetime.today().date().isoformat(),
@@ -185,6 +187,79 @@ def empty_fields() -> dict[str, Any]:
         "total_due": 0.0,
         "pay_link_url": "",
     }
+
+
+def create_manual_payment_link(
+    *,
+    amount: float,
+    currency: str,
+    description: str,
+    no_split: bool = True,
+    teacher_name: str | None = None,
+    teacher_share: float = 0.0,
+) -> dict[str, Any]:
+    """Lien de paiement Stripe ad hoc pour une facture editee a la main.
+
+    no_split=True  -> tout encaisse sur le compte de secrets_no_prof.yaml.
+    no_split=False -> split vers le compte Connect du prof (transfer_data +
+                      application_fee_amount), comme les liens generes en masse.
+    """
+    try:
+        import stripe
+    except ImportError:
+        return {"success": False, "error": "Module stripe non installé (pip install stripe)."}
+
+    if no_split:
+        secrets = load_secrets_no_prof()
+        if not secrets:
+            return {
+                "success": False,
+                "error": "secrets_no_prof.yaml introuvable — requis pour le mode sans transfert.",
+            }
+    else:
+        secrets = load_secrets()
+
+    api_key = ((secrets or {}).get("stripe") or {}).get("platform_secret_key")
+    if not api_key:
+        return {"success": False, "error": "Clé Stripe manquante (stripe.platform_secret_key)."}
+    if float(amount) <= 0:
+        return {"success": False, "error": "Le montant doit être supérieur à 0."}
+
+    connect_id = None
+    if not no_split:
+        if not teacher_name:
+            return {"success": False, "error": "Sélectionne un professeur pour le mode split."}
+        cfg = ((secrets.get("teachers") or {}).get(teacher_name) or {})
+        connect_id = cfg.get("connect_account_id")
+        if not connect_id:
+            return {"success": False, "error": f"'{teacher_name}' n'a pas de compte Stripe Connect."}
+
+    stripe.api_key = api_key
+    cur = (currency or "eur").lower()
+    total_cents = int(round(float(amount) * 100))
+
+    try:
+        price = stripe.Price.create(
+            unit_amount=total_cents,
+            currency=cur,
+            product_data={"name": description or "Soutien scolaire"},
+        )
+        params: dict[str, Any] = {
+            "line_items": [{"price": price.id, "quantity": 1}],
+            "customer_creation": "always",
+            "restrictions": {"completed_sessions": {"limit": 1}},
+            "after_completion": {"type": "hosted_confirmation"},
+            "metadata": {"source": "editeur_facture_manuelle"},
+        }
+        if connect_id and float(teacher_share or 0) > 0:
+            teacher_cents = min(int(round(float(teacher_share) * 100)), total_cents)
+            params["transfer_data"] = {"destination": connect_id}
+            params["application_fee_amount"] = max(total_cents - teacher_cents, 0)
+
+        link = stripe.PaymentLink.create(**params)
+        return {"success": True, "url": link.url}
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc)}
 
 
 def render_pdf(fields: dict[str, Any]) -> bytes:

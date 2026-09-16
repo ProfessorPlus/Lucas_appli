@@ -24,6 +24,8 @@ class TeacherIn(BaseModel):
     pay_rate_chf: float = 0
     pay_rate_eur: float = 0
     auto_chf: bool = False
+    legal_name: str = ""
+    siren: str = ""
 
 
 class TeacherUpdate(BaseModel):
@@ -31,6 +33,8 @@ class TeacherUpdate(BaseModel):
     pay_rate_chf: float | None = None
     pay_rate_eur: float | None = None
     auto_chf: bool | None = None
+    legal_name: str | None = None
+    siren: str | None = None
 
 
 @router.get("/teachers")
@@ -47,6 +51,8 @@ def create_teacher(body: TeacherIn) -> dict[str, Any]:
             pay_rate_chf=body.pay_rate_chf,
             pay_rate_eur=body.pay_rate_eur,
             auto_chf=body.auto_chf,
+            legal_name=body.legal_name,
+            siren=body.siren,
         )
     except ValueError as e:
         raise HTTPException(409, str(e))

@@ -31,6 +31,7 @@ from app.routes import (
     reminders,
     send,
     sync,
+    twint,
 )
 from app.routes import settings as settings_routes
 from app.routes import update_notion_routes
@@ -68,6 +69,7 @@ app.include_router(update_notion_routes.router, prefix="/api")
 app.include_router(cleanup.router, prefix="/api")
 app.include_router(payroll.router, prefix="/api")
 app.include_router(edit_invoice.router, prefix="/api")
+app.include_router(twint.router, prefix="/api")
 
 
 @app.on_event("startup")

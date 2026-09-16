@@ -1,17 +1,21 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-pydantic>=2.9.0
-pydantic-settings>=2.6.0
-python-multipart>=0.0.12
-httpx>=0.27.0
-python-dotenv>=1.0.1
-sse-starlette>=2.1.3
+# Versions figees — meme raison que requirements.txt a la racine : sans pin, la
+# resolution sur la plateforme de deploiement part sur des majeures non testees.
+# Ces versions sont celles validees en local (import app + 74 routes + generation
+# PDF paie/facture OK). Ne pas repasser en ">=" sans revalider un deploiement.
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-multipart==0.0.27
+httpx==0.28.1
+python-dotenv==1.2.2
+sse-starlette==3.4.2
 
-# Réutilisés depuis l'app Streamlit
-stripe>=5.0.0
-reportlab>=4.0.0
-pyyaml>=6.0
-requests>=2.28.0
-google-auth>=2.0.0
-google-auth-oauthlib>=1.0.0
-google-api-python-client>=2.0.0
+# Reutilises depuis l'app Streamlit (scripts/ est partage avec la Streamlit)
+stripe==15.1.0
+reportlab==4.5.0
+pyyaml==6.0.3
+requests==2.33.1
+google-auth==2.52.0
+google-auth-oauthlib==1.4.0
+google-api-python-client==2.196.0

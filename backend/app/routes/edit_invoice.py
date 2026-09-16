@@ -38,6 +38,31 @@ def load(body: LoadBody) -> dict[str, Any]:
         raise HTTPException(404, str(e))
 
 
+class PaymentLinkBody(BaseModel):
+    amount: float
+    currency: str = "EUR"
+    description: str = "Soutien scolaire"
+    no_split: bool = True
+    teacher_name: str | None = None
+    teacher_share: float = 0.0
+
+
+@router.post("/payment-link")
+def payment_link(body: PaymentLinkBody) -> dict[str, Any]:
+    """Cree un lien Stripe ad hoc pour la facture en cours d'edition."""
+    result = svc.create_manual_payment_link(
+        amount=body.amount,
+        currency=body.currency,
+        description=body.description,
+        no_split=body.no_split,
+        teacher_name=body.teacher_name,
+        teacher_share=body.teacher_share,
+    )
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error") or "Création du lien impossible")
+    return result
+
+
 @router.get("/empty-fields")
 def empty_fields() -> dict[str, Any]:
     return svc.empty_fields()

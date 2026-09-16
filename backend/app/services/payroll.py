@@ -38,6 +38,15 @@ def _extraction_end() -> date | None:
         return None
 
 
+def _teachers_cfg() -> dict[str, Any]:
+    """Bloc `teachers` de secrets.yaml — porte legal_name / siren affiches sur
+    la fiche de paie. Sans lui, generate_prof_pdfs n'a rien a imprimer."""
+    try:
+        return (load_secrets() or {}).get("teachers", {}) or {}
+    except Exception:
+        return {}
+
+
 def _zero_hour_notion_profs() -> set[str]:
     """Profs listed with 0h in Notion 'Profs hors TutorBird' — they must be
     excluded from the recap (mirrors page_accueil's _get_zero_hour_notion_profs
@@ -102,6 +111,7 @@ def pdf_for_teacher(teacher_name: str, *, mois_label: str | None = None) -> byte
     return generate_single_pdf_to_bytes(
         teacher_name, _load_data(), mois_label or "Période en cours",
         logo_path=_logo_path(), extraction_end_date=_extraction_end(),
+        teachers_cfg=_teachers_cfg(),
     )
 
 
@@ -115,6 +125,7 @@ def zip_all_pdfs(*, mois_label: str | None = None) -> bytes:
     return generate_all_pdfs_as_zip(
         teacher_recaps, mois_label or "Période en cours",
         logo_path=_logo_path(), extraction_end_date=_extraction_end(),
+        teachers_cfg=_teachers_cfg(),
     )
 
 
@@ -128,4 +139,5 @@ def combined_pdf(*, mois_label: str | None = None) -> bytes:
     return generate_all_pdfs_to_bytes(
         teacher_recaps, mois_label or "Période en cours",
         logo_path=_logo_path(), extraction_end_date=_extraction_end(),
+        teachers_cfg=_teachers_cfg(),
     )

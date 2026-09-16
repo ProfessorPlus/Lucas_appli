@@ -11,10 +11,12 @@ import {
   FileText,
   Trash2,
   Plus,
+  Zap,
+  PenLine,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api, type InvoiceFolder } from "@/lib/api";
+import { api, type InvoiceFolder, type Teacher } from "@/lib/api";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 interface EditItem { date: string; description: string; amount: number; }
 interface EditFields {
   parent_name: string;
+  teacher_name: string;
+  student_name: string;
   billing_address: string;
   parent_email: string;
   invoice_date: string; // YYYY-MM-DD
@@ -60,11 +64,31 @@ export default function EditInvoicePage() {
   const [editedPdfBase64, setEditedPdfBase64] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Saisie manuelle (facture vierge, sans PDF ni dossier source)
+  const [mTeacherFirst, setMTeacherFirst] = useState("");
+  const [mTeacherLast, setMTeacherLast] = useState("");
+  const [mFamFirst, setMFamFirst] = useState("");
+  const [mFamLast, setMFamLast] = useState("");
+  const [mStudentFirst, setMStudentFirst] = useState("");
+  const [mStudentLast, setMStudentLast] = useState("");
+
+  // Generation de lien Stripe depuis l'editeur
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [noSplit, setNoSplit] = useState(true);
+  const [linkTeacher, setLinkTeacher] = useState("");
+  const [teacherShare, setTeacherShare] = useState("0");
+
   useEffect(() => {
     api.get<InvoiceFolder[]>("/invoice-folders").then((f) => {
       setFolders(f);
       if (f.length > 0) setFolder(f[0].month);
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.get<Teacher[]>("/settings/teachers")
+      .then((t) => setTeachers(t.filter((x) => x.connect_account_id)))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -134,6 +158,70 @@ export default function EditInvoicePage() {
     } catch (e) {
       toast.error(`${e instanceof Error ? e.message : "?"}`);
     } finally { setLoading(false); }
+  }
+
+  async function createManualInvoice() {
+    const teacherFull = `${mTeacherFirst} ${mTeacherLast}`.trim();
+    const familyFull = `${mFamFirst} ${mFamLast}`.trim();
+    const studentFull = `${mStudentFirst} ${mStudentLast}`.trim();
+    if (!familyFull) {
+      toast.error("Renseigne au moins le nom (ou prénom) de la famille.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const empty = await api.get<EditFields>("/edit/empty-fields");
+      // L'élève, s'il est saisi, remplace la famille dans la description de la
+      // ligne — la famille reste utilisée pour le "Facturer à".
+      const descriptionTarget = studentFull || familyFull;
+      const next: EditFields = {
+        ...empty,
+        parent_name: familyFull,
+        teacher_name: teacherFull,
+        student_name: studentFull,
+        items: teacherFull
+          ? [{
+              date: new Date().toLocaleDateString("fr-FR").replace(/\//g, "."),
+              description: `Cours avec ${teacherFull} pour ${descriptionTarget}`,
+              amount: 0,
+            }]
+          : empty.items,
+      };
+      setRawPdfBase64(null);
+      setFields(next);
+      setEditedPdfBlob(null);
+      setEditedPdfBase64(null);
+      if (teacherFull) setLinkTeacher(teacherFull);
+      toast.success("Facture vierge créée");
+    } catch (e) {
+      toast.error(`${e instanceof Error ? e.message : "?"}`);
+    } finally { setLoading(false); }
+  }
+
+  async function generateStripeLink() {
+    if (!fields) return;
+    const amount = fields.package_mode
+      ? fields.total_due
+      : fields.items.reduce((s, it) => s + (it.amount || 0), 0);
+    if (amount <= 0) {
+      toast.error("Le montant doit être supérieur à 0.");
+      return;
+    }
+    setBusy("link");
+    try {
+      const r = await api.post<{ success: boolean; url: string }>("/edit/payment-link", {
+        amount,
+        currency: fields.currency,
+        description: `Soutien scolaire | ${fields.parent_name || "Facture"}`,
+        no_split: noSplit,
+        teacher_name: noSplit ? null : linkTeacher,
+        teacher_share: noSplit ? 0 : parseFloat(teacherShare) || 0,
+      });
+      setFields((prev) => (prev ? { ...prev, pay_link_url: r.url } : prev));
+      toast.success("Lien Stripe créé");
+    } catch (e) {
+      toast.error(`${e instanceof Error ? e.message : "?"}`);
+    } finally { setBusy(null); }
   }
 
   async function renderPdf() {
@@ -248,6 +336,7 @@ export default function EditInvoicePage() {
             <TabsList>
               <TabsTrigger value="folder">📁 Dossier de factures</TabsTrigger>
               <TabsTrigger value="upload">📤 Upload PDF</TabsTrigger>
+              <TabsTrigger value="manual">✍️ Saisie manuelle</TabsTrigger>
             </TabsList>
 
             <TabsContent value="folder" className="space-y-3">
@@ -307,6 +396,39 @@ export default function EditInvoicePage() {
                 const file = e.target.files?.[0];
                 if (file) void loadFromUpload(file);
               }} />
+            </TabsContent>
+
+            <TabsContent value="manual" className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Crée une facture vierge en saisissant le professeur, la famille et (si besoin)
+                l&apos;élève à la main — aucun PDF ni dossier requis. Prénom ou nom seul suffit.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Professeur</p>
+                  <Input placeholder="Prénom" value={mTeacherFirst} onChange={(e) => setMTeacherFirst(e.target.value)} />
+                  <Input placeholder="Nom" value={mTeacherLast} onChange={(e) => setMTeacherLast(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Famille (facturation)</p>
+                  <Input placeholder="Prénom" value={mFamFirst} onChange={(e) => setMFamFirst(e.target.value)} />
+                  <Input placeholder="Nom" value={mFamLast} onChange={(e) => setMFamLast(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Élève <span className="normal-case font-normal">(optionnel)</span>
+                  </p>
+                  <Input placeholder="Prénom" value={mStudentFirst} onChange={(e) => setMStudentFirst(e.target.value)} />
+                  <Input placeholder="Nom" value={mStudentLast} onChange={(e) => setMStudentLast(e.target.value)} />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                ℹ️ Si un élève est saisi, il remplace la famille dans la description de la ligne
+                (« Cours avec … pour … ») — la famille reste utilisée pour le « Facturer à ».
+              </p>
+              <Button variant="accent" onClick={createManualInvoice} disabled={loading}>
+                {loading ? <Loader2 className="animate-spin" /> : <PenLine />} Créer une facture vierge
+              </Button>
             </TabsContent>
           </Tabs>
 
@@ -411,6 +533,67 @@ export default function EditInvoicePage() {
               <Label>Lien Stripe (bouton "Cliquez ici pour payer")</Label>
               <Input value={fields.pay_link_url} onChange={(e) => setF("pay_link_url", e.target.value)} placeholder="https://buy.stripe.com/..." />
             </div>
+
+            <details className="rounded-lg border border-border bg-secondary/20 p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                ⚡ Générer automatiquement le lien de paiement Stripe
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div className="flex items-start gap-2">
+                  <Switch id="ei-nosplit" checked={noSplit} onCheckedChange={setNoSplit} />
+                  <Label
+                    htmlFor="ei-nosplit"
+                    className="cursor-pointer normal-case tracking-normal text-sm font-medium text-foreground"
+                  >
+                    🏦 Tout recevoir sur mon compte (sans transfert au prof)
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      Activé : tout va sur le compte de secrets_no_prof.yaml, aucun split.
+                      Désactivé : split vers le compte Stripe Connect d&apos;un professeur.
+                    </span>
+                  </Label>
+                </div>
+
+                {!noSplit && (
+                  teachers.length === 0 ? (
+                    <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm">
+                      ⚠️ Aucun professeur avec un compte Stripe Connect configuré.
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label>Professeur (On Behalf Of / split)</Label>
+                        <select
+                          value={linkTeacher}
+                          onChange={(e) => setLinkTeacher(e.target.value)}
+                          className="flex h-10 w-full rounded-lg border border-border bg-card px-3 text-sm"
+                        >
+                          <option value="">— Choisir —</option>
+                          {teachers.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Part reversée au professeur ({fields.currency})</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={autoTotal || undefined}
+                          value={teacherShare}
+                          onChange={(e) => setTeacherShare(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  )
+                )}
+
+                <Button
+                  onClick={generateStripeLink}
+                  disabled={busy === "link" || (!noSplit && !linkTeacher)}
+                >
+                  {busy === "link" ? <Loader2 className="animate-spin" /> : <Zap />} Générer le lien Stripe
+                </Button>
+              </div>
+            </details>
 
             {rawPdfBase64 && (
               <details>

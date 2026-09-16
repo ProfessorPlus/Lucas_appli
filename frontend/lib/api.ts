@@ -132,6 +132,9 @@ export interface Teacher {
   pay_rate_chf: number;
   pay_rate_eur: number;
   auto_chf: boolean;
+  /** Raison sociale imprimée sur la fiche de paie ("Émise au nom de : …"). */
+  legal_name: string;
+  siren: string;
 }
 
 export interface TeacherInput {
@@ -140,6 +143,8 @@ export interface TeacherInput {
   pay_rate_chf?: number;
   pay_rate_eur?: number;
   auto_chf?: boolean;
+  legal_name?: string;
+  siren?: string;
 }
 
 export interface TeacherStripeStatus {
@@ -335,4 +340,25 @@ export interface CreateLinksBody {
   target_family_ids?: string[] | null;
   additional_amounts?: Record<string, unknown> | null;
   skip_if_exists: boolean;
+}
+
+export interface TwintAccount {
+  name: string;
+  connect_id: string | null;
+  /** Valeur brute de la capability Stripe `twint_payments`, ou message d'erreur. */
+  twint_status: string;
+  has_connect: boolean;
+  country?: string;
+  type?: string;
+}
+
+export interface TwintConnectAccount {
+  name: string;
+  connect_account_id: string;
+}
+
+export interface TwintStatusResponse {
+  success: boolean;
+  accounts: TwintAccount[];
+  error?: string;
 }

@@ -75,7 +75,7 @@ export default function TeachersPage() {
         <div>
           <h2 className="text-xl font-bold tracking-tight">Professeurs</h2>
           <p className="text-sm text-muted-foreground">
-            Taux horaires (CHF/EUR), comptes Stripe Connect, et option Auto-CHF.
+            Taux horaires (CHF/EUR), comptes Stripe Connect, identité légale et option Auto-CHF.
           </p>
         </div>
         <Button onClick={() => setCreating(true)} variant="accent">
@@ -113,6 +113,7 @@ export default function TeachersPage() {
               <thead className="bg-secondary/50 text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="p-3 text-left font-semibold">Nom</th>
+                  <th className="p-3 text-left font-semibold">Identité légale</th>
                   <th className="p-3 text-right font-semibold">CHF/h</th>
                   <th className="p-3 text-right font-semibold">EUR/h</th>
                   <th className="p-3 text-center font-semibold">Auto-CHF</th>
@@ -126,6 +127,20 @@ export default function TeachersPage() {
                   return (
                     <tr key={t.name} className="border-t border-border">
                       <td className="p-3 font-medium">{t.name}</td>
+                      <td className="p-3">
+                        {t.legal_name || t.siren ? (
+                          <div className="leading-tight">
+                            {t.legal_name && <div className="text-xs">{t.legal_name}</div>}
+                            {t.siren && (
+                              <div className="font-mono text-[10px] text-muted-foreground">
+                                SIREN {t.siren}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="p-3 text-right tabular-nums">
                         {t.pay_rate_chf > 0 ? t.pay_rate_chf.toFixed(2) : "—"}
                       </td>
@@ -252,6 +267,8 @@ function TeacherForm({
   const [chf, setChf] = useState(initial?.pay_rate_chf?.toString() ?? "0");
   const [eur, setEur] = useState(initial?.pay_rate_eur?.toString() ?? "0");
   const [autoChf, setAutoChf] = useState(initial?.auto_chf ?? false);
+  const [legalName, setLegalName] = useState(initial?.legal_name ?? "");
+  const [siren, setSiren] = useState(initial?.siren ?? "");
   const [submitting, setSubmitting] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -264,6 +281,8 @@ function TeacherForm({
         pay_rate_chf: parseFloat(chf) || 0,
         pay_rate_eur: parseFloat(eur) || 0,
         auto_chf: autoChf,
+        legal_name: legalName,
+        siren,
       };
       if (mode === "create") {
         await api.post("/settings/teachers", payload);
@@ -275,6 +294,8 @@ function TeacherForm({
           pay_rate_chf: payload.pay_rate_chf,
           pay_rate_eur: payload.pay_rate_eur,
           auto_chf: autoChf,
+          legal_name: legalName,
+          siren,
         });
         toast.success(`"${initial!.name}" mis à jour`);
       }
@@ -323,6 +344,29 @@ function TeacherForm({
             <Label htmlFor="t-eur">Taux EUR/h</Label>
             <Input id="t-eur" type="number" step="0.01" value={eur} onChange={(e) => setEur(e.target.value)} />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="t-legal">Nom légal</Label>
+            <Input
+              id="t-legal"
+              value={legalName}
+              onChange={(e) => setLegalName(e.target.value)}
+              placeholder="Raison sociale / nom d'état civil"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="t-siren">SIREN</Label>
+            <Input
+              id="t-siren"
+              value={siren}
+              onChange={(e) => setSiren(e.target.value)}
+              placeholder="9 chiffres"
+              inputMode="numeric"
+            />
+          </div>
+          <p className="-mt-1 text-xs text-muted-foreground sm:col-span-2">
+            Nom légal et SIREN apparaissent sur la fiche de paie PDF, sous les cartes
+            de synthèse : «&nbsp;Émise au nom de&nbsp;: … • SIREN …&nbsp;».
+          </p>
           <div className="flex items-center gap-2 sm:col-span-2">
             <Switch id="t-auto" checked={autoChf} onCheckedChange={setAutoChf} />
             <Label htmlFor="t-auto" className="cursor-pointer normal-case tracking-normal text-sm font-medium text-foreground">
