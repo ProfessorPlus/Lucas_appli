@@ -4594,7 +4594,57 @@ def _empty_edit_fields():
         "package_label": "1 Package FORMATION Anglais",
         "total_due": 0.0,
         "pay_link_url": "",
+        "teacher_name": "",
     }
+
+
+def _create_manual_stripe_payment_link(secrets, amount, currency, description,
+                                        teacher_connect_id=None, teacher_share=0.0):
+    """Crée un lien de paiement Stripe ad hoc pour une facture éditée à la main.
+
+    Si teacher_connect_id est fourni avec une part (teacher_share > 0), le paiement
+    est splitté (transfer_data + application_fee_amount) comme pour les liens générés
+    en masse depuis la page Paiements. Sinon, tout reste sur le compte Stripe principal.
+    """
+    try:
+        import stripe
+    except ImportError:
+        return {"success": False, "error": "Module stripe non installé (pip install stripe)."}
+
+    api_key = (secrets or {}).get("stripe", {}).get("platform_secret_key")
+    if not api_key:
+        return {"success": False, "error": "Clé Stripe manquante (stripe.platform_secret_key)."}
+    if amount <= 0:
+        return {"success": False, "error": "Le montant doit être supérieur à 0."}
+
+    stripe.api_key = api_key
+    currency = (currency or "eur").lower()
+    total_cents = int(round(float(amount) * 100))
+
+    try:
+        price = stripe.Price.create(
+            unit_amount=total_cents,
+            currency=currency,
+            product_data={"name": description or "Soutien scolaire"},
+        )
+
+        params = {
+            "line_items": [{"price": price.id, "quantity": 1}],
+            "customer_creation": "always",
+            "restrictions": {"completed_sessions": {"limit": 1}},
+            "after_completion": {"type": "hosted_confirmation"},
+            "metadata": {"source": "editeur_facture_manuelle"},
+        }
+
+        if teacher_connect_id and float(teacher_share or 0) > 0:
+            teacher_cents = min(int(round(float(teacher_share) * 100)), total_cents)
+            params["transfer_data"] = {"destination": teacher_connect_id}
+            params["application_fee_amount"] = max(total_cents - teacher_cents, 0)
+
+        link = stripe.PaymentLink.create(**params)
+        return {"success": True, "url": link.url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def page_edit_invoice(ctx):
@@ -4610,7 +4660,9 @@ def page_edit_invoice(ctx):
     # 1️⃣  SOURCE
     # ===========================
     st.markdown("### 1️⃣  Source de la facture")
-    tab_folder, tab_upload = st.tabs(["📁 Dossier de factures", "📤 Upload PDF"])
+    tab_folder, tab_upload, tab_manual = st.tabs(
+        ["📁 Dossier de factures", "📤 Upload PDF", "✍️ Saisie manuelle"]
+    )
 
     # ---- Tab 1 : dossier mois ----
     with tab_folder:
@@ -4719,6 +4771,7 @@ def page_edit_invoice(ctx):
                                 "package_label": "1 Package FORMATION Anglais",
                                 "total_due": sum(i["amount"] for i in items_pf),
                                 "pay_link_url": pay_link,
+                                "teacher_name": "",
                                 "_origin_drive_folder_id": sel_folder_obj.get("drive_id"),
                                 "_origin_family_subfolder": sel_fam,
                                 "_origin_pdf_filename": sel_pdf,
@@ -4737,6 +4790,45 @@ def page_edit_invoice(ctx):
             state["loaded"] = True
             state["source"] = "upload"
             st.rerun()
+
+    # ---- Tab 3 : saisie manuelle (facture vierge) ----
+    with tab_manual:
+        st.caption(
+            "Crée une facture vierge en saisissant le professeur et la famille à la main "
+            "(aucun PDF ni dossier requis)."
+        )
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.markdown("**Professeur**")
+            m_teacher_first = st.text_input("Prénom du professeur", key="edit_inv_manual_tfirst")
+            m_teacher_last = st.text_input("Nom du professeur", key="edit_inv_manual_tlast")
+        with mc2:
+            st.markdown("**Famille**")
+            m_fam_first = st.text_input("Prénom de la famille", key="edit_inv_manual_ffirst")
+            m_fam_last = st.text_input("Nom de la famille", key="edit_inv_manual_flast")
+
+        if st.button("✏️ Créer une facture vierge", key="edit_inv_manual_create", type="primary"):
+            teacher_full = f"{m_teacher_first} {m_teacher_last}".strip()
+            family_full = f"{m_fam_first} {m_fam_last}".strip()
+
+            if not family_full:
+                st.error("❌ Renseigne au moins le nom (ou prénom) de la famille.")
+            else:
+                fields = _empty_edit_fields()
+                fields["parent_name"] = family_full
+                fields["teacher_name"] = teacher_full
+                if teacher_full:
+                    fields["items"] = [{
+                        "date": datetime.today().strftime("%d.%m.%Y"),
+                        "description": f"Cours avec {teacher_full} pour {family_full}",
+                        "amount": 0.0,
+                    }]
+
+                state["raw_pdf_bytes"] = None
+                state["fields"] = fields
+                state["loaded"] = True
+                state["source"] = "manual"
+                st.rerun()
 
     if not state.get("loaded"):
         st.info("👆 Charge d'abord une facture via les onglets ci-dessus.")
@@ -4843,6 +4935,51 @@ def page_edit_invoice(ctx):
         f.get("pay_link_url", ""),
         key="edit_inv_pay_link",
     )
+
+    with st.expander("⚡ Générer automatiquement le lien de paiement Stripe"):
+        teachers_cfg = secrets.get("teachers", {})
+        f["teacher_name"] = st.text_input(
+            "Nom du professeur (optionnel — pour splitter le paiement sur son compte Stripe Connect)",
+            f.get("teacher_name", ""),
+            key="edit_inv_teacher_name",
+        )
+
+        matched_teacher = next(
+            (t for t in teachers_cfg if t.strip().lower() == (f["teacher_name"] or "").strip().lower()),
+            None,
+        )
+        connect_id = (teachers_cfg.get(matched_teacher) or {}).get("connect_account_id") if matched_teacher else None
+
+        teacher_share = 0.0
+        if connect_id:
+            st.caption(f"✅ Professeur reconnu : **{matched_teacher}** (compte Stripe Connect lié)")
+            teacher_share = st.number_input(
+                f"Part reversée au professeur ({f['currency']}) — 0 = tout reste sur ton compte",
+                min_value=0.0,
+                max_value=max(float(f.get("total_due", 0.0)), 0.0),
+                value=0.0,
+                step=0.01,
+                format="%.2f",
+                key="edit_inv_teacher_share",
+            )
+        elif f["teacher_name"]:
+            st.caption("ℹ️ Professeur non trouvé dans la config → le lien créditera entièrement ton compte Stripe.")
+
+        if st.button("⚡ Générer le lien Stripe", key="edit_inv_gen_stripe_link"):
+            result = _create_manual_stripe_payment_link(
+                secrets,
+                amount=float(f.get("total_due", 0.0)),
+                currency=f.get("currency", "EUR"),
+                description=f"Soutien scolaire | {f.get('parent_name') or 'Facture'}",
+                teacher_connect_id=connect_id,
+                teacher_share=teacher_share,
+            )
+            if result.get("success"):
+                f["pay_link_url"] = result["url"]
+                st.success(f"✅ Lien créé : {result['url']}")
+                st.rerun()
+            else:
+                st.error(f"❌ {result.get('error')}")
 
     if state.get("raw_pdf_bytes"):
         with st.expander("👁  Aperçu du PDF original (pour référence)"):
