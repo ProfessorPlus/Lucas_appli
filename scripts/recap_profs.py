@@ -21,7 +21,13 @@ from functools import lru_cache
 import requests
 
 
-PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}
+PAYABLE_STATUSES = {"Present", "Unrecorded", "AbsentNoMakeup"}  # deprecated, gardé pour compat
+
+# Règle métier : si le client est facturé (statut != AbsentNotice), le prof est payé.
+# Doit rester aligné avec STATUTS_NON_FACTURES dans generate_invoices.py — sinon
+# on facture le client sans payer le prof (ex: statuts TB "AbsentBillable" etc.
+# passaient la facture mais étaient silencieusement ignorés cote paie).
+STATUTS_NON_PAYABLES = {"AbsentNotice"}
 
 # ===========================
 # FX CHF → EUR + générique (AED, etc.)
@@ -365,7 +371,10 @@ def compute_teacher_recap(
 
         for lesson in fam.get("lessons", []):
             status = lesson.get("attendance_status", "")
-            if status not in PAYABLE_STATUSES:
+            # Alignement avec la facture client : on paie le prof pour tout
+            # ce qui est facturé au client (exclusion uniquement des statuts
+            # explicitement non-facturables).
+            if status in STATUTS_NON_PAYABLES:
                 continue
 
             t_name = lesson.get("teacher") or ""
@@ -383,9 +392,47 @@ def compute_teacher_recap(
             # CAS SPÉCIAL : Prof hors TutorBird (depuis Notion)
             # ===========================
             if lesson.get("source") == "notion_hors_tb":
-                notion_rate = lesson.get("notion_taux_prof", 0)
+                # Cas Frais de déplacement : reverse au prof exactement ce que
+                # la cliente paie en plus (pas de mult par heures). Pas de
+                # comptage dans nb_lessons / total_hours pour ne pas polluer
+                # les compteurs.
+                if lesson.get("is_fee"):
+                    fee_amount = float(lesson.get("amount", 0) or 0)
+                    fee_devise = lesson.get("notion_devise_prof", "EUR")
+                    if fee_devise == "EUR":
+                        teacher_totals[t_name]["eur"] += fee_amount
+                        currency_label = "EUR (Frais)"
+                        amount_eur = fee_amount
+                    else:
+                        ensure_fx()
+                        amount_eur = smart_round(fee_amount * CHF_TO_EUR)
+                        teacher_totals[t_name]["chf_as_eur"] += amount_eur
+                        currency_label = "CHF→EUR (Frais)"
+                    # Date affichée : 'Mai 2026' si mois_label présent, comme
+                    # pour les leçons standards.
+                    _mois_lbl = (lesson.get("notion_mois_label") or "").strip()
+                    if _mois_lbl:
+                        _ref = _to_date(extraction_end_date)
+                        _year = _ref.year if _ref else datetime.today().year
+                        date_display_fee = f"{_mois_lbl} {_year}"
+                    else:
+                        date_display_fee = lesson.get("date", "")
+                    teacher_totals[t_name]["details"].append({
+                        "date": date_display_fee,
+                        "student": "Frais de déplacement",
+                        "family_parent": parent,
+                        "currency": currency_label,
+                        "duration_min": 0,
+                        "rate": 0,
+                        "amount_eur": round(amount_eur, 2),
+                        "is_fee": True,
+                    })
+                    continue
+
+                # Défense : Notion peut renvoyer None si la cellule est vide.
+                notion_rate = float(lesson.get("notion_taux_prof") or 0)
                 notion_devise = lesson.get("notion_devise_prof", "EUR")
-                
+
                 if notion_devise == "EUR":
                     amount_eur = notion_rate * hours
                     teacher_totals[t_name]["eur"] += amount_eur
@@ -400,8 +447,19 @@ def compute_teacher_recap(
                 
                 teacher_totals[t_name]["nb_lessons"] += 1
                 teacher_totals[t_name]["total_hours"] += hours
+                # Pour Notion hors TB : afficher "Mai 2026" au lieu de la date
+                # de fetch (qui n'a aucun sens — c'est juste today()). Source :
+                # colonne Notion "Mois" + année prise sur extraction_end_date
+                # (ou today si non fournie).
+                _mois_lbl = (lesson.get("notion_mois_label") or "").strip()
+                if _mois_lbl:
+                    _ref = _to_date(extraction_end_date)
+                    _year = _ref.year if _ref else datetime.today().year
+                    date_display = f"{_mois_lbl} {_year}"
+                else:
+                    date_display = lesson.get("date", "")
                 teacher_totals[t_name]["details"].append({
-                    "date": lesson.get("date", ""),
+                    "date": date_display,
                     "student": lesson.get("student", ""),
                     "family_parent": parent,
                     "currency": currency_label,

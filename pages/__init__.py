@@ -138,6 +138,72 @@ def _update_metadata(secrets, key_name, value=None, date_value=None):
         print(f"⚠️ Metadata update failed for {key_name}: {e}")
 
 
+def _refresh_notion_credit_on_data(data, secrets=None):
+    """Rafraîchit le crédit Notion des familles hors TutorBird depuis l'état actuel.
+
+    Le crédit est persisté dans full_output_tb_SIMPLE.json au moment de l'extraction.
+    Si l'utilisateur modifie la colonne 'Credit' dans Notion après extraction sans
+    ré-extraire, les factures utilisent une valeur périmée. Ce helper met à jour
+    les crédits des familles Notion à partir de session_state.notion_profs_data
+    (rafraîchi via le bouton 'Rafraîchir depuis Notion' de la page Extraction).
+
+    - Lazy fetch : si session_state.notion_profs_data est vide, on fetch Notion.
+    - Agrégation MAX par famille (comme convert_notion_profs_to_families).
+    - Si la colonne Credit est vidée dans Notion, on retire la clé sur data pour
+      que la facture soit générée sans la ligne 'Crédit utilisé'.
+    """
+    if not data:
+        return
+    if "notion_profs_data" not in st.session_state and secrets:
+        try:
+            from scripts.fetch_notion_profs import fetch_notion_profs
+            res = fetch_notion_profs(secrets)
+            if res.get("success"):
+                st.session_state.notion_profs_data = res.get("entries", [])
+        except Exception:
+            pass
+
+    entries = st.session_state.get("notion_profs_data", []) or []
+    if not entries:
+        return
+
+    from scripts.fetch_notion_profs import _parse_french_amount
+
+    fresh_credit_by_family = {}
+    fresh_credit_text_by_family = {}
+    for e in entries:
+        fam_name = (e.get("famille") or "").strip()
+        if not fam_name:
+            continue
+        credit_text = e.get("credit_text", "") or ""
+        credit_amt = _parse_french_amount(credit_text)
+        # MAX (agrégation multi-lignes)
+        if credit_amt > fresh_credit_by_family.get(fam_name, 0.0):
+            fresh_credit_by_family[fam_name] = credit_amt
+            fresh_credit_text_by_family[fam_name] = credit_text
+
+    for fam_id, fam in data.items():
+        if fam.get("source") != "notion_hors_tb":
+            continue
+        parent = (fam.get("parent_name") or "").strip()
+        # On chercher aussi par match tolérant sur family_name
+        candidates = [parent, (fam.get("family_name") or "").strip()]
+        fresh = 0.0
+        fresh_text = ""
+        for cand in candidates:
+            if cand in fresh_credit_by_family:
+                fresh = fresh_credit_by_family[cand]
+                fresh_text = fresh_credit_text_by_family.get(cand, "")
+                break
+        if fresh > 0:
+            fam["notion_credit_available"] = fresh
+            fam["notion_credit_text"] = fresh_text
+        else:
+            # Colonne Credit vidée dans Notion -> on retire les clés
+            fam.pop("notion_credit_available", None)
+            fam.pop("notion_credit_text", None)
+
+
 def _get_zero_hour_notion_profs(secrets=None):
     """Retourne le set des profs listés à 0h dans 'Profs hors TutorBird' Notion.
 
@@ -164,13 +230,22 @@ def _get_zero_hour_notion_profs(secrets=None):
             print(f"⚠️ Lazy fetch Notion profs hors TB échoué : {_e}")
             st.session_state.notion_profs_data = []
 
+    # On exclut un prof UNIQUEMENT si TOUTES ses entrées Notion sont à 0h.
+    # Sinon un prof comme Romain Queille (une entrée à 6h pour Pinelli + une
+    # à 0h pour Odelia Cohen — juste la ligne 'Ajouter 15€ frais') disparaît
+    # totalement du récap alors qu'il devrait apparaître avec ses 6h réelles.
     excluded = set()
     try:
+        prof_hours = {}  # {nom_prof: [heures_par_entree, ...]}
         for e in st.session_state.get("notion_profs_data", []) or []:
-            if float(e.get("heures_faites") or 0) <= 0:
-                prof = (e.get("professeur") or "").strip()
-                if prof:
-                    excluded.add(prof)
+            prof = (e.get("professeur") or "").strip()
+            if not prof:
+                continue
+            h = float(e.get("heures_faites") or 0)
+            prof_hours.setdefault(prof, []).append(h)
+        for prof, hours_list in prof_hours.items():
+            if all(h <= 0 for h in hours_list):
+                excluded.add(prof)
     except Exception:
         pass
     return excluded
@@ -1363,6 +1438,8 @@ def page_payment(ctx):
                     st.error("❌ secrets_no_prof.yaml manquant !")
                     result = None
                 else:
+                    # Rafraîchir crédit Notion depuis l'état actuel avant création des liens.
+                    _refresh_notion_credit_on_data(data, secrets)
                     result = run_create_payment_links_no_split(
                         data, secrets_no_prof, familles_euros,
                         ctx["DATA_DIR"], callback,
@@ -1462,6 +1539,8 @@ def page_payment(ctx):
                     if not secrets_no_prof_t2:
                         st.error("❌ secrets_no_prof.yaml manquant !")
                     else:
+                        # Rafraîchir crédit Notion depuis l'état actuel avant création des liens.
+                        _refresh_notion_credit_on_data(data, secrets)
                         result = run_create_payment_links_no_split(
                             data, secrets_no_prof_t2, familles_euros,
                             ctx["DATA_DIR"], callback,
@@ -1526,6 +1605,10 @@ def page_payment(ctx):
                         status.info(m)
                     
                     filtered_data = {fid: fam for fid, fam in data.items() if fid in regen_fam_ids}
+                    # Rafraîchir crédit Notion depuis l'état actuel (Notion peut avoir
+                    # changé depuis l'extraction — si l'utilisateur a vidé la colonne
+                    # 'Credit', on n'applique plus le crédit).
+                    _refresh_notion_credit_on_data(filtered_data, secrets)
                     result = run_generate_invoices(
                         filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                         target_folder_path=target_folder_path,
@@ -1960,6 +2043,8 @@ def page_invoices(ctx):
                     st.error("❌ Impossible de charger le dossier sélectionné depuis Google Drive.")
                     return
 
+            # Rafraîchir crédit Notion depuis l'état actuel avant génération.
+            _refresh_notion_credit_on_data(data, secrets)
             result = run_generate_invoices(
                 data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                 target_folder_path=target_folder_path,
@@ -2057,6 +2142,8 @@ def page_invoices(ctx):
                     status.info(m)
 
                 filtered_data = {fid: fam for fid, fam in data.items() if fid in selected_family_ids}
+                # Rafraîchir crédit Notion depuis l'état actuel avant génération.
+                _refresh_notion_credit_on_data(filtered_data, secrets)
                 result = run_generate_invoices(
                     filtered_data, secrets, familles_euros, ctx["DATA_DIR"], ctx["BASE_DIR"], logo_path, callback,
                     target_folder_path=selected_folder_path,
@@ -3634,6 +3721,8 @@ def page_config(ctx):
                         "EUR/h": float(t_data.get("pay_rate", {}).get("eur", 0)),
                         "Auto CHF": auto_chf,
                         "Stripe Connect ID": t_data.get("connect_account_id") or "",
+                        "Nom légal": t_data.get("legal_name") or "",
+                        "SIREN": t_data.get("siren") or "",
                         "Supprimer": False
                     })
                 
@@ -3671,6 +3760,16 @@ def page_config(ctx):
                         "Stripe Connect ID": st.column_config.TextColumn(
                             "🔗 Stripe Connect ID",
                             width="large"
+                        ),
+                        "Nom légal": st.column_config.TextColumn(
+                            "📛 Nom légal",
+                            help="Nom légal apparaissant sur la fiche de paie (ex: 'Hafssa ZANDAR'). Laisser vide pour utiliser le nom du prof.",
+                            width="medium"
+                        ),
+                        "SIREN": st.column_config.TextColumn(
+                            "🆔 SIREN",
+                            help="N° SIREN affiché sur la fiche de paie (9 chiffres). Laisser vide si non applicable.",
+                            width="small"
                         ),
                         "Supprimer": st.column_config.CheckboxColumn(
                             "🗑️",
@@ -3713,6 +3812,17 @@ def page_config(ctx):
                                 teachers[name]["pay_rate"]["eur"] = eur_rate
                                 teachers[name]["auto_chf"] = is_auto
                                 teachers[name]["connect_account_id"] = (row["Stripe Connect ID"] or "").strip()
+                                # Nom légal + SIREN : on enregistre si rempli, on enlève la clé si vidée
+                                _ln = (row.get("Nom légal") or "").strip()
+                                _sir = (row.get("SIREN") or "").strip()
+                                if _ln:
+                                    teachers[name]["legal_name"] = _ln
+                                else:
+                                    teachers[name].pop("legal_name", None)
+                                if _sir:
+                                    teachers[name]["siren"] = _sir
+                                else:
+                                    teachers[name].pop("siren", None)
                         
                         secrets["teachers"] = teachers
                         ctx["save_secrets"](secrets)
@@ -4311,7 +4421,7 @@ def page_profs(ctx):
             safe_name = tname.replace(" ", "_")
             filename = f"Paie_{safe_name}_{mois_label.replace(' ', '_')}.pdf"
 
-            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end)
+            pdf_bytes = generate_single_pdf_to_bytes(tname, tdata, mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
             col_dl, col_send = st.columns(2)
             with col_dl:
                 st.download_button(
@@ -4366,7 +4476,7 @@ def page_profs(ctx):
             else:
                 sent = 0
                 for p in profs_with_email:
-                    pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                    pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
                     fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
                     ok = _send_prof_pdf(secrets, p["name"], test_email, pdf_b, fname, mois_label, silent=True)
                     if ok:
@@ -4378,7 +4488,7 @@ def page_profs(ctx):
             sent = 0
             errors = []
             for p in profs_with_email:
-                pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end)
+                pdf_b = generate_single_pdf_to_bytes(p["name"], p["data"], mois_label, logo_path, extraction_end_date=extraction_end, teachers_cfg=secrets.get("teachers", {}))
                 fname = f"Paie_{p['name'].replace(' ', '_')}_{mois_label.replace(' ', '_')}.pdf"
                 ok = _send_prof_pdf(secrets, p["name"], p["email"], pdf_b, fname, mois_label, silent=True)
                 if ok:
@@ -4406,6 +4516,7 @@ def page_profs(ctx):
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
                     extraction_end_date=extraction_end,
+                    teachers_cfg=secrets.get("teachers", {}),
                 )
                 if zip_bytes:
                     st.session_state.prof_zip_bytes = zip_bytes
@@ -4420,6 +4531,7 @@ def page_profs(ctx):
                     teachers, mois_label,
                     logo_path=logo_path,
                     exclude_owner="Parisi Lucas",
+                    teachers_cfg=secrets.get("teachers", {}),
                     extraction_end_date=extraction_end,
                 )
                 if pdf_bytes:
@@ -4482,7 +4594,58 @@ def _empty_edit_fields():
         "package_label": "1 Package FORMATION Anglais",
         "total_due": 0.0,
         "pay_link_url": "",
+        "teacher_name": "",
+        "student_name": "",
     }
+
+
+def _create_manual_stripe_payment_link(secrets, amount, currency, description,
+                                        teacher_connect_id=None, teacher_share=0.0):
+    """Crée un lien de paiement Stripe ad hoc pour une facture éditée à la main.
+
+    Si teacher_connect_id est fourni avec une part (teacher_share > 0), le paiement
+    est splitté (transfer_data + application_fee_amount) comme pour les liens générés
+    en masse depuis la page Paiements. Sinon, tout reste sur le compte Stripe principal.
+    """
+    try:
+        import stripe
+    except ImportError:
+        return {"success": False, "error": "Module stripe non installé (pip install stripe)."}
+
+    api_key = (secrets or {}).get("stripe", {}).get("platform_secret_key")
+    if not api_key:
+        return {"success": False, "error": "Clé Stripe manquante (stripe.platform_secret_key)."}
+    if amount <= 0:
+        return {"success": False, "error": "Le montant doit être supérieur à 0."}
+
+    stripe.api_key = api_key
+    currency = (currency or "eur").lower()
+    total_cents = int(round(float(amount) * 100))
+
+    try:
+        price = stripe.Price.create(
+            unit_amount=total_cents,
+            currency=currency,
+            product_data={"name": description or "Soutien scolaire"},
+        )
+
+        params = {
+            "line_items": [{"price": price.id, "quantity": 1}],
+            "customer_creation": "always",
+            "restrictions": {"completed_sessions": {"limit": 1}},
+            "after_completion": {"type": "hosted_confirmation"},
+            "metadata": {"source": "editeur_facture_manuelle"},
+        }
+
+        if teacher_connect_id and float(teacher_share or 0) > 0:
+            teacher_cents = min(int(round(float(teacher_share) * 100)), total_cents)
+            params["transfer_data"] = {"destination": teacher_connect_id}
+            params["application_fee_amount"] = max(total_cents - teacher_cents, 0)
+
+        link = stripe.PaymentLink.create(**params)
+        return {"success": True, "url": link.url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def page_edit_invoice(ctx):
@@ -4498,7 +4661,9 @@ def page_edit_invoice(ctx):
     # 1️⃣  SOURCE
     # ===========================
     st.markdown("### 1️⃣  Source de la facture")
-    tab_folder, tab_upload = st.tabs(["📁 Dossier de factures", "📤 Upload PDF"])
+    tab_folder, tab_upload, tab_manual = st.tabs(
+        ["📁 Dossier de factures", "📤 Upload PDF", "✍️ Saisie manuelle"]
+    )
 
     # ---- Tab 1 : dossier mois ----
     with tab_folder:
@@ -4607,6 +4772,7 @@ def page_edit_invoice(ctx):
                                 "package_label": "1 Package FORMATION Anglais",
                                 "total_due": sum(i["amount"] for i in items_pf),
                                 "pay_link_url": pay_link,
+                                "teacher_name": "",
                                 "_origin_drive_folder_id": sel_folder_obj.get("drive_id"),
                                 "_origin_family_subfolder": sel_fam,
                                 "_origin_pdf_filename": sel_pdf,
@@ -4625,6 +4791,58 @@ def page_edit_invoice(ctx):
             state["loaded"] = True
             state["source"] = "upload"
             st.rerun()
+
+    # ---- Tab 3 : saisie manuelle (facture vierge) ----
+    with tab_manual:
+        st.caption(
+            "Crée une facture vierge en saisissant le professeur, la famille et (si besoin) "
+            "l'élève à la main (aucun PDF ni dossier requis). Prénom ou nom seul suffit."
+        )
+        mc1, mc2, mc3 = st.columns(3)
+        with mc1:
+            st.markdown("**Professeur**")
+            m_teacher_first = st.text_input("Prénom du professeur", key="edit_inv_manual_tfirst")
+            m_teacher_last = st.text_input("Nom du professeur", key="edit_inv_manual_tlast")
+        with mc2:
+            st.markdown("**Famille (facturation)**")
+            m_fam_first = st.text_input("Prénom de la famille", key="edit_inv_manual_ffirst")
+            m_fam_last = st.text_input("Nom de la famille", key="edit_inv_manual_flast")
+        with mc3:
+            st.markdown("**Élève** *(optionnel)*")
+            m_student_first = st.text_input("Prénom de l'élève", key="edit_inv_manual_sfirst")
+            m_student_last = st.text_input("Nom de l'élève", key="edit_inv_manual_slast")
+        st.caption(
+            "ℹ️ Si un prénom et/ou nom d'élève est saisi, il remplace la famille dans la "
+            "description de la ligne (\"Cours avec ... pour ...\") — la famille reste utilisée "
+            "pour le \"Facturer à\"."
+        )
+
+        if st.button("✏️ Créer une facture vierge", key="edit_inv_manual_create", type="primary"):
+            teacher_full = f"{m_teacher_first} {m_teacher_last}".strip()
+            family_full = f"{m_fam_first} {m_fam_last}".strip()
+            student_full = f"{m_student_first} {m_student_last}".strip()
+
+            if not family_full:
+                st.error("❌ Renseigne au moins le nom (ou prénom) de la famille.")
+            else:
+                description_target = student_full or family_full
+
+                fields = _empty_edit_fields()
+                fields["parent_name"] = family_full
+                fields["teacher_name"] = teacher_full
+                fields["student_name"] = student_full
+                if teacher_full:
+                    fields["items"] = [{
+                        "date": datetime.today().strftime("%d.%m.%Y"),
+                        "description": f"Cours avec {teacher_full} pour {description_target}",
+                        "amount": 0.0,
+                    }]
+
+                state["raw_pdf_bytes"] = None
+                state["fields"] = fields
+                state["loaded"] = True
+                state["source"] = "manual"
+                st.rerun()
 
     if not state.get("loaded"):
         st.info("👆 Charge d'abord une facture via les onglets ci-dessus.")
@@ -4665,7 +4883,8 @@ def page_edit_invoice(ctx):
             key="edit_inv_num",
         )
     with col3:
-        cur_options = ["EUR", "CHF"]
+        # AED ajouté pour les familles Notion hors TutorBird en dirham émirati (Aseelah).
+        cur_options = ["EUR", "CHF", "AED"]
         cur_cur = (f.get("currency") or "EUR").upper()
         cur_idx = cur_options.index(cur_cur) if cur_cur in cur_options else 0
         f["currency"] = st.selectbox("Devise", cur_options, index=cur_idx, key="edit_inv_cur")
@@ -4730,6 +4949,79 @@ def page_edit_invoice(ctx):
         f.get("pay_link_url", ""),
         key="edit_inv_pay_link",
     )
+
+    with st.expander("⚡ Générer automatiquement le lien de paiement Stripe"):
+        st.markdown("**💰 Mode de paiement** *(comme sur la page Créer liens paiement)*")
+        no_split_manual = st.toggle(
+            "🏦 Tout recevoir sur mon compte (sans transfert au prof)",
+            value=True,
+            key="edit_inv_no_split",
+            help=(
+                "Activé (par défaut) : tout va sur le compte Stripe défini dans "
+                "secrets_no_prof.yaml, aucun split. Désactivé : split vers le compte "
+                "Stripe Connect d'un professeur configuré."
+            ),
+        )
+
+        secrets_for_link = None
+        connect_id = None
+        teacher_share = 0.0
+
+        if no_split_manual:
+            secrets_for_link = ctx.get("load_secrets_no_prof", lambda: None)()
+            if not secrets_for_link:
+                st.error(
+                    "❌ `secrets_no_prof.yaml` non trouvé (config/ ou racine du projet). "
+                    "Requis pour le mode sans transfert."
+                )
+        else:
+            secrets_for_link = secrets
+            teachers_cfg = secrets.get("teachers", {})
+            teachers_with_connect = [n for n, i in teachers_cfg.items() if i.get("connect_account_id")]
+
+            if not teachers_with_connect:
+                st.warning("⚠️ Aucun professeur avec un compte Stripe Connect configuré.")
+            else:
+                current_teacher = (f.get("teacher_name") or "").strip().lower()
+                default_idx = next(
+                    (i for i, n in enumerate(teachers_with_connect) if n.strip().lower() == current_teacher),
+                    0,
+                )
+                selected_teacher_for_link = st.selectbox(
+                    "Professeur (On Behalf Of / split)",
+                    teachers_with_connect,
+                    index=default_idx,
+                    key="edit_inv_link_teacher",
+                )
+                connect_id = teachers_cfg.get(selected_teacher_for_link, {}).get("connect_account_id")
+                teacher_share = st.number_input(
+                    f"Part reversée au professeur ({f['currency']})",
+                    min_value=0.0,
+                    max_value=max(float(f.get("total_due", 0.0)), 0.0),
+                    value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="edit_inv_teacher_share",
+                )
+
+        if st.button("⚡ Générer le lien Stripe", key="edit_inv_gen_stripe_link"):
+            if not secrets_for_link:
+                st.error("❌ Configuration Stripe manquante pour ce mode.")
+            else:
+                result = _create_manual_stripe_payment_link(
+                    secrets_for_link,
+                    amount=float(f.get("total_due", 0.0)),
+                    currency=f.get("currency", "EUR"),
+                    description=f"Soutien scolaire | {f.get('parent_name') or 'Facture'}",
+                    teacher_connect_id=connect_id,
+                    teacher_share=teacher_share,
+                )
+                if result.get("success"):
+                    f["pay_link_url"] = result["url"]
+                    st.success(f"✅ Lien créé : {result['url']}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result.get('error')}")
 
     if state.get("raw_pdf_bytes"):
         with st.expander("👁  Aperçu du PDF original (pour référence)"):

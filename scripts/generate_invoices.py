@@ -184,7 +184,7 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                        parent_name, logo_path, counter_root, today, is_notion_custom=False,
                        previous_items=None, previous_month_label=None,
                        custom_billing_address=None, invoice_number_override=None,
-                       custom_package_label=None):
+                       custom_package_label=None, credit_info=None):
     """
     Génère un PDF de facture.
 
@@ -268,25 +268,30 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
     inv_number = invoice_number_override if invoice_number_override else _next_invoice_number(counter_root, today)
 
     # BANDEAU HAUT
+    #
+    # Note : pour les modes 'Éditeur' (custom_billing_address) et 'Carole
+    # OCTOPUS' (is_notion_custom), l'adresse Facturer à est placée dans la
+    # colonne GAUCHE — alignée verticalement sous le logo Professor+ — pour
+    # que le bloc soit visuellement bien collé au bord gauche. Sinon (mode
+    # standard TB), le nom du parent reste au centre à côté de la tagline.
     if custom_billing_address:
-        # Éditeur : adresse "Facturer à" personnalisée multi-ligne.
-        # Pas de tagline à gauche (style packagé).
-        left_band = Paragraph("", st_sub)
-        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
+        # Éditeur : adresse "Facturer à" personnalisée multi-ligne, alignée gauche.
+        st_addr_left = ParagraphStyle(name="addr_left", fontName=FONT_SANS, fontSize=9, leading=12)
         addr_html = "<b>Facturer à :</b><br/>" + custom_billing_address.replace("\n", "<br/>")
-        middle_band = Paragraph(addr_html, st_addr_mid)
+        left_band = Paragraph(addr_html, st_addr_left)
+        middle_band = Paragraph("", st_sub)
     elif is_notion_custom:
-        # Carole / Notion custom : pas de tagline, adresse OCTOPUS dans "Facturer à"
-        left_band = Paragraph("", st_sub)  # Vide à gauche
-        st_addr_mid = ParagraphStyle(name="addr_mid", fontName=FONT_SANS, fontSize=9, leading=12)
-        middle_band = Paragraph(
+        # Carole / Notion custom : adresse OCTOPUS alignée gauche sous le logo.
+        st_addr_left = ParagraphStyle(name="addr_left", fontName=FONT_SANS, fontSize=9, leading=12)
+        left_band = Paragraph(
             "<b>Facturer à :</b><br/>"
             "OCTOPUS SARL<br/>"
             "C/o CATS BUSINESS CENTER<br/>"
             "28 bd Princesse Charlotte<br/>"
             "98 000 MONACO",
-            st_addr_mid,
+            st_addr_left,
         )
+        middle_band = Paragraph("", st_sub)
     else:
         tagline_text = TAGLINE_LEFT
         left_band = Paragraph(tagline_text.replace("\n", "<br/>"), st_sub)
@@ -328,7 +333,22 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
             Paragraph(custom_package_label or "1 Package FORMATION Anglais", st_package),
             Paragraph("Professionnel", st_package_frais),
         ])
-        
+
+        # Ligne 'Crédit utilisé' (mode OCTOPUS) si un crédit est appliqué.
+        # credit_info = {'used': float, 'initial': float, 'currency': str}
+        if credit_info and float(credit_info.get("used") or 0) > 0:
+            _cred_used = float(credit_info["used"])
+            _cred_initial = float(credit_info.get("initial") or _cred_used)
+            _cred_currency = credit_info.get("currency") or "EUR"
+            _fr_initial = f"{_cred_initial:,.2f}".replace(",", " ").replace(".", ",")
+            _fr_used = f"-{_cred_used:,.2f}".replace(",", " ").replace(".", ",")
+            st_credit_desc = ParagraphStyle(name="cred_d", fontName=FONT_SANS, fontSize=10, textColor=colors.Color(0.4, 0.4, 0.4))
+            st_credit_val = ParagraphStyle(name="cred_v", fontName=FONT_BOLD, fontSize=10, alignment=TA_CENTER, textColor=colors.Color(0.6, 0.2, 0.2))
+            data_tbl.append([
+                Paragraph(f"Crédit utilisé (solde initial : {_fr_initial} {_cred_currency})", st_credit_desc),
+                Paragraph(f"{_fr_used} {_cred_currency}", st_credit_val),
+            ])
+
         # Ajouter les cours impayés des mois précédents (notion custom)
         if previous_items:
             separator_label = previous_month_label or "mois précédent(s)"
@@ -361,12 +381,16 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
 
     if not is_notion_custom:
         for item in items:
-            date_cell = item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
+            # Si l'item porte un date_display (ex 'Mai 2026' pour Notion hors TB),
+            # on l'utilise tel quel. Sinon strftime classique sur la date brute.
+            date_cell = item.get("date_display") or (
+                item["date"].strftime("%d.%m.%Y") if item["date"] != datetime.min else ""
+            )
             desc_cell = item["description"]
             amt = float(item["amount"])
             amount_cell = f"{amt:.2f} {currency}"
             data_tbl.append([date_cell, desc_cell, amount_cell])
-        
+
         # Ajouter les cours impayés des mois précédents
         if previous_items:
             separator_label = previous_month_label or "mois précédent(s)"
@@ -382,7 +406,9 @@ def _build_invoice_pdf(output_path, items, total_due_display, pay_link_url,
                 "",
             ])
             for prev_item in previous_items:
-                date_cell = prev_item["date"].strftime("%d.%m.%Y") if prev_item["date"] != datetime.min else ""
+                date_cell = prev_item.get("date_display") or (
+                    prev_item["date"].strftime("%d.%m.%Y") if prev_item["date"] != datetime.min else ""
+                )
                 desc_cell = prev_item["description"]
                 amt = float(prev_item["amount"])
                 amount_cell = f"{amt:.2f} {currency}"
@@ -636,9 +662,11 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
             is_notion_custom = ("carole" in _pname_lower and "tessier" in _pname_lower)
 
             currency = "EUR" if fam_id in families_in_euros else "CHF"
-            # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion)
+            # Prioriser la devise définie dans les données (ex: profs hors TutorBird via Notion).
+            # AED inclus : Aseelah a fam.currency='aed' dans Notion ; sans AED ici sa facture
+            # tombait par défaut sur CHF (bug rapporté 2026-05-21).
             fam_currency = (fam.get("currency") or "").upper()
-            if fam_currency in ("EUR", "CHF"):
+            if fam_currency in ("EUR", "CHF", "AED"):
                 currency = fam_currency
             
             # Filtrer les absences
@@ -687,10 +715,21 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     student = L.get("student", "")
                     teacher = L.get("teacher", "Professeur")
                     duration = L.get("duration_min", "")
-                    desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                    # Si la leçon porte une description override (ex: "Frais de
+                    # déplacement" injectée par fetch_notion_profs), on l'utilise
+                    # telle quelle au lieu du format "Cours avec ... pour ...".
+                    desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
-                    items.append({"date": d, "description": desc, "amount": amt})
+                    # Pour Notion hors TB : afficher "Mai 2026" au lieu de la
+                    # date de fetch (qui n'a aucun sens — c'est juste today()).
+                    # Année prise sur today (invoice date).
+                    _mois_lbl = (L.get("notion_mois_label") or "").strip()
+                    date_display = f"{_mois_lbl} {today.year}" if _mois_lbl else None
+                    item = {"date": d, "description": desc, "amount": amt}
+                    if date_display:
+                        item["date_display"] = date_display
+                    items.append(item)
                 
                 if total_due <= 0:
                     continue
@@ -711,17 +750,47 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                             student = L.get("student", "")
                             teacher = L.get("teacher", "Professeur")
                             duration = L.get("duration_min", "")
-                            desc = f"Cours avec {teacher} pour {student} ({duration} min)"
+                            desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                             amt = float(L.get("amount", 0) or 0)
                             total_due += amt
-                            prev_items_for_fam.append({"date": d, "description": desc, "amount": amt})
-                
+                            # Idem main loop : date affichée 'Mai 2026' si Notion hors TB.
+                            _mois_lbl = (L.get("notion_mois_label") or "").strip()
+                            prev_item = {"date": d, "description": desc, "amount": amt}
+                            if _mois_lbl:
+                                prev_item["date_display"] = f"{_mois_lbl} {today.year}"
+                            prev_items_for_fam.append(prev_item)
+
+                # ===========================
+                # CRÉDIT NOTION : déduire du total facturé
+                # ===========================
+                # Si la famille a un crédit utilisable (colonne 'Credit' Notion),
+                # on le déduit du total dû. Si le crédit couvre tout, total = 0.
+                # Une ligne 'Crédit utilisé' est ajoutée aux items pour
+                # transparence. Le lien Stripe pointe vers example.com si plus
+                # rien à payer (ne sera pas affiché côté UI dans ce cas).
+                credit_avail = float(fam.get("notion_credit_available") or 0)
+                credit_used = 0.0
+                if credit_avail > 0 and total_due > 0:
+                    credit_used = min(credit_avail, total_due)
+                    total_due -= credit_used
+                    # Format français du montant : '2 321,28' au lieu de '2,321.28'
+                    _fr_initial = f"{credit_avail:,.2f}".replace(",", " ").replace(".", ",")
+                    # Ligne de transparence dans le tableau (sauf si OCTOPUS : la
+                    # ligne crédit est ajoutée à part dans le path is_notion_custom
+                    # car les items ne sont pas rendus dans ce mode).
+                    if not is_notion_custom:
+                        items.append({
+                            "date": datetime.min,
+                            "description": f"Crédit utilisé (solde initial : {_fr_initial} {currency})",
+                            "amount": -credit_used,
+                        })
+
                 total_due_display = f"{total_due:.2f} {currency}"
-                
+
                 # Lien no-split
                 no_split_key = (fam_id, "__no_split__")
                 pay_link_url = links_map.get(no_split_key)
-                
+
                 if pay_link_url:
                     liens_trouves += 1
                 else:
@@ -732,12 +801,20 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 output_path = os.path.join(fam_base_dir, filename)
                 
                 # Générer le PDF (is_notion_custom calculé en amont)
+                _credit_info = None
+                if credit_used > 0:
+                    _credit_info = {
+                        "used": credit_used,
+                        "initial": credit_avail,
+                        "currency": currency,
+                    }
                 _build_invoice_pdf(
                     output_path, items, total_due_display, pay_link_url,
                     parent_name, logo_path, counter_root, today,
                     is_notion_custom=is_notion_custom,
                     previous_items=prev_items_for_fam if prev_items_for_fam else None,
                     previous_month_label=previous_month_label,
+                    credit_info=_credit_info,
                 )
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     factures_generees += 1
