@@ -4595,6 +4595,7 @@ def _empty_edit_fields():
         "total_due": 0.0,
         "pay_link_url": "",
         "teacher_name": "",
+        "student_name": "",
     }
 
 
@@ -4794,33 +4795,46 @@ def page_edit_invoice(ctx):
     # ---- Tab 3 : saisie manuelle (facture vierge) ----
     with tab_manual:
         st.caption(
-            "Crée une facture vierge en saisissant le professeur et la famille à la main "
-            "(aucun PDF ni dossier requis)."
+            "Crée une facture vierge en saisissant le professeur, la famille et (si besoin) "
+            "l'élève à la main (aucun PDF ni dossier requis). Prénom ou nom seul suffit."
         )
-        mc1, mc2 = st.columns(2)
+        mc1, mc2, mc3 = st.columns(3)
         with mc1:
             st.markdown("**Professeur**")
             m_teacher_first = st.text_input("Prénom du professeur", key="edit_inv_manual_tfirst")
             m_teacher_last = st.text_input("Nom du professeur", key="edit_inv_manual_tlast")
         with mc2:
-            st.markdown("**Famille**")
+            st.markdown("**Famille (facturation)**")
             m_fam_first = st.text_input("Prénom de la famille", key="edit_inv_manual_ffirst")
             m_fam_last = st.text_input("Nom de la famille", key="edit_inv_manual_flast")
+        with mc3:
+            st.markdown("**Élève** *(optionnel)*")
+            m_student_first = st.text_input("Prénom de l'élève", key="edit_inv_manual_sfirst")
+            m_student_last = st.text_input("Nom de l'élève", key="edit_inv_manual_slast")
+        st.caption(
+            "ℹ️ Si un prénom et/ou nom d'élève est saisi, il remplace la famille dans la "
+            "description de la ligne (\"Cours avec ... pour ...\") — la famille reste utilisée "
+            "pour le \"Facturer à\"."
+        )
 
         if st.button("✏️ Créer une facture vierge", key="edit_inv_manual_create", type="primary"):
             teacher_full = f"{m_teacher_first} {m_teacher_last}".strip()
             family_full = f"{m_fam_first} {m_fam_last}".strip()
+            student_full = f"{m_student_first} {m_student_last}".strip()
 
             if not family_full:
                 st.error("❌ Renseigne au moins le nom (ou prénom) de la famille.")
             else:
+                description_target = student_full or family_full
+
                 fields = _empty_edit_fields()
                 fields["parent_name"] = family_full
                 fields["teacher_name"] = teacher_full
+                fields["student_name"] = student_full
                 if teacher_full:
                     fields["items"] = [{
                         "date": datetime.today().strftime("%d.%m.%Y"),
-                        "description": f"Cours avec {teacher_full} pour {family_full}",
+                        "description": f"Cours avec {teacher_full} pour {description_target}",
                         "amount": 0.0,
                     }]
 
@@ -4937,49 +4951,77 @@ def page_edit_invoice(ctx):
     )
 
     with st.expander("⚡ Générer automatiquement le lien de paiement Stripe"):
-        teachers_cfg = secrets.get("teachers", {})
-        f["teacher_name"] = st.text_input(
-            "Nom du professeur (optionnel — pour splitter le paiement sur son compte Stripe Connect)",
-            f.get("teacher_name", ""),
-            key="edit_inv_teacher_name",
+        st.markdown("**💰 Mode de paiement** *(comme sur la page Créer liens paiement)*")
+        no_split_manual = st.toggle(
+            "🏦 Tout recevoir sur mon compte (sans transfert au prof)",
+            value=True,
+            key="edit_inv_no_split",
+            help=(
+                "Activé (par défaut) : tout va sur le compte Stripe défini dans "
+                "secrets_no_prof.yaml, aucun split. Désactivé : split vers le compte "
+                "Stripe Connect d'un professeur configuré."
+            ),
         )
 
-        matched_teacher = next(
-            (t for t in teachers_cfg if t.strip().lower() == (f["teacher_name"] or "").strip().lower()),
-            None,
-        )
-        connect_id = (teachers_cfg.get(matched_teacher) or {}).get("connect_account_id") if matched_teacher else None
-
+        secrets_for_link = None
+        connect_id = None
         teacher_share = 0.0
-        if connect_id:
-            st.caption(f"✅ Professeur reconnu : **{matched_teacher}** (compte Stripe Connect lié)")
-            teacher_share = st.number_input(
-                f"Part reversée au professeur ({f['currency']}) — 0 = tout reste sur ton compte",
-                min_value=0.0,
-                max_value=max(float(f.get("total_due", 0.0)), 0.0),
-                value=0.0,
-                step=0.01,
-                format="%.2f",
-                key="edit_inv_teacher_share",
-            )
-        elif f["teacher_name"]:
-            st.caption("ℹ️ Professeur non trouvé dans la config → le lien créditera entièrement ton compte Stripe.")
+
+        if no_split_manual:
+            secrets_for_link = ctx.get("load_secrets_no_prof", lambda: None)()
+            if not secrets_for_link:
+                st.error(
+                    "❌ `secrets_no_prof.yaml` non trouvé (config/ ou racine du projet). "
+                    "Requis pour le mode sans transfert."
+                )
+        else:
+            secrets_for_link = secrets
+            teachers_cfg = secrets.get("teachers", {})
+            teachers_with_connect = [n for n, i in teachers_cfg.items() if i.get("connect_account_id")]
+
+            if not teachers_with_connect:
+                st.warning("⚠️ Aucun professeur avec un compte Stripe Connect configuré.")
+            else:
+                current_teacher = (f.get("teacher_name") or "").strip().lower()
+                default_idx = next(
+                    (i for i, n in enumerate(teachers_with_connect) if n.strip().lower() == current_teacher),
+                    0,
+                )
+                selected_teacher_for_link = st.selectbox(
+                    "Professeur (On Behalf Of / split)",
+                    teachers_with_connect,
+                    index=default_idx,
+                    key="edit_inv_link_teacher",
+                )
+                connect_id = teachers_cfg.get(selected_teacher_for_link, {}).get("connect_account_id")
+                teacher_share = st.number_input(
+                    f"Part reversée au professeur ({f['currency']})",
+                    min_value=0.0,
+                    max_value=max(float(f.get("total_due", 0.0)), 0.0),
+                    value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="edit_inv_teacher_share",
+                )
 
         if st.button("⚡ Générer le lien Stripe", key="edit_inv_gen_stripe_link"):
-            result = _create_manual_stripe_payment_link(
-                secrets,
-                amount=float(f.get("total_due", 0.0)),
-                currency=f.get("currency", "EUR"),
-                description=f"Soutien scolaire | {f.get('parent_name') or 'Facture'}",
-                teacher_connect_id=connect_id,
-                teacher_share=teacher_share,
-            )
-            if result.get("success"):
-                f["pay_link_url"] = result["url"]
-                st.success(f"✅ Lien créé : {result['url']}")
-                st.rerun()
+            if not secrets_for_link:
+                st.error("❌ Configuration Stripe manquante pour ce mode.")
             else:
-                st.error(f"❌ {result.get('error')}")
+                result = _create_manual_stripe_payment_link(
+                    secrets_for_link,
+                    amount=float(f.get("total_due", 0.0)),
+                    currency=f.get("currency", "EUR"),
+                    description=f"Soutien scolaire | {f.get('parent_name') or 'Facture'}",
+                    teacher_connect_id=connect_id,
+                    teacher_share=teacher_share,
+                )
+                if result.get("success"):
+                    f["pay_link_url"] = result["url"]
+                    st.success(f"✅ Lien créé : {result['url']}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result.get('error')}")
 
     if state.get("raw_pdf_bytes"):
         with st.expander("👁  Aperçu du PDF original (pour référence)"):
