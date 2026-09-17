@@ -413,6 +413,10 @@ with st.sidebar:
     if st.button("🔔 Rappels paiement", key="nav_reminders", width="stretch"):
         st.session_state.current_page = "reminders"
         st.rerun()
+
+    if st.button("📣 Relance commerciale", key="nav_campaign", width="stretch"):
+        st.session_state.current_page = "campaign"
+        st.rerun()
     
     st.markdown('<p class="section-label">🔄 SYNCHRONISATION</p>', unsafe_allow_html=True)
     
@@ -452,7 +456,7 @@ from pages import (
     page_accueil, page_extract, page_twint, page_cleanup,
     page_payment, page_invoices, page_send, page_reminders,
     page_sync, page_update, page_config, page_profs,
-    page_edit_invoice,
+    page_edit_invoice, page_campaign,
 )
 
 # ===========================
@@ -496,6 +500,8 @@ elif page == "send":
     page_send(ctx)
 elif page == "reminders":
     page_reminders(ctx)
+elif page == "campaign":
+    page_campaign(ctx)
 elif page == "sync":
     page_sync(ctx)
 elif page == "update":

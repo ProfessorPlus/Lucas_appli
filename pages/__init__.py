@@ -21,6 +21,7 @@ from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
+from scripts.send_campaign_emails import build_campaign_recipients, fetch_emails_from_notion, fill_missing_emails, get_default_campaign_template, run_send_campaign
 from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
@@ -2943,6 +2944,226 @@ Professor+
                         st.write(f"• **{f['parent_name']}** — email manquant")
         else:
             st.error(f"❌ Erreur : {result.get('error', 'Erreur inconnue')}")
+
+def page_campaign(ctx):
+    """Relance commerciale : email type aux familles facturées un mois donné."""
+    st.markdown('<div class="section-title">📣 Relance commerciale</div>', unsafe_allow_html=True)
+    st.caption(
+        "Choisis un mois de factures, sélectionne les familles à relancer, écris ton "
+        "message et envoie-le. Aucune facture n'est jointe : c'est un email simple."
+    )
+
+    secrets = ctx["load_secrets"]()
+    if not secrets:
+        st.error("❌ Fichier secrets.yaml non trouvé !")
+        return
+
+    state = st.session_state.setdefault("campaign_state", {})
+
+    # ===========================
+    # 1️⃣  MOIS DES FACTURES
+    # ===========================
+    st.markdown("### 1️⃣  Mois des factures")
+
+    folders = []
+    try:
+        folders = list_invoice_folders() or []
+    except Exception as e:
+        st.warning(f"⚠️ Listing des dossiers indisponible : {e}")
+
+    if not folders:
+        st.info("Aucun dossier de factures trouvé (local + Drive).")
+        return
+
+    choices = [f"{f.get('year', '')} / {f.get('month', '')}" for f in folders]
+    selected_label = st.selectbox("Mois à relancer", choices, key="campaign_folder_pick")
+    selected_folder = folders[choices.index(selected_label)]
+
+    if st.button("👥 Charger les familles de ce mois", type="primary",
+                 width="stretch", key="campaign_load"):
+        with st.spinner(f"Chargement de '{selected_folder.get('month', '')}'..."):
+            folder_path = _ensure_local_invoice_folder(selected_folder)
+
+        if not folder_path:
+            st.error("❌ Dossier introuvable en local et sur Drive.")
+        else:
+            try:
+                data_local = ctx.get("load_extracted_data", lambda: {})() or {}
+            except Exception:
+                data_local = {}
+
+            recipients = build_campaign_recipients(
+                folder_path, data_local, state.get("notion_emails")
+            )
+
+            for key in [k for k in st.session_state
+                        if k.startswith(("campaign_sel_", "campaign_mail_"))]:
+                del st.session_state[key]
+
+            state["recipients"] = recipients
+            state["folder_label"] = selected_label
+            st.rerun()
+
+    recipients = state.get("recipients")
+    if not recipients:
+        st.info("👆 Charge d'abord les familles d'un mois.")
+        return
+
+    # ===========================
+    # 2️⃣  DESTINATAIRES
+    # ===========================
+    st.markdown("---")
+    st.markdown(f"### 2️⃣  Destinataires — {state.get('folder_label', '')}")
+
+    missing = [r for r in recipients if not r.get("email")]
+    st.success(
+        f"✅ {len(recipients) - len(missing)} famille(s) avec email  •  "
+        f"⚠️ {len(missing)} sans email"
+    )
+
+    if missing and st.button("🔎 Compléter les emails manquants via Notion",
+                             width="stretch", key="campaign_notion"):
+        progress = st.progress(0)
+        status = st.empty()
+
+        def callback(p, m):
+            progress.progress(p)
+            status.info(m)
+
+        result = fetch_emails_from_notion(secrets, callback=callback)
+        if not result.get("success"):
+            st.error(f"❌ {result.get('error')}")
+        else:
+            notion_emails = result.get("emails", {})
+            state["notion_emails"] = notion_emails
+            filled = fill_missing_emails(recipients, notion_emails)
+
+            for key in [k for k in st.session_state if k.startswith("campaign_mail_")]:
+                del st.session_state[key]
+
+            st.success(f"✅ {filled} email(s) complété(s) depuis Notion")
+            st.rerun()
+
+    st.caption(
+        "Décoche les familles à ne pas contacter. Un email peut être corrigé ou "
+        "ajouté directement dans le champ. 🟢 extraction · 🔵 Notion · ✏️ saisi à la main"
+    )
+
+    col_all, col_none = st.columns(2)
+    with col_all:
+        if st.button("✅ Tout sélectionner", width="stretch", key="campaign_all"):
+            for i, r in enumerate(recipients):
+                st.session_state[f"campaign_sel_{i}"] = bool(r.get("email"))
+            st.rerun()
+    with col_none:
+        if st.button("⬜ Tout désélectionner", width="stretch", key="campaign_none"):
+            for i in range(len(recipients)):
+                st.session_state[f"campaign_sel_{i}"] = False
+            st.rerun()
+
+    for i, r in enumerate(recipients):
+        cols = st.columns([0.6, 3, 4])
+        with cols[0]:
+            st.checkbox(
+                "Sélectionner", value=bool(r.get("email")),
+                key=f"campaign_sel_{i}", label_visibility="collapsed",
+            )
+        with cols[1]:
+            badge = {"extraction": "🟢", "notion": "🔵", "manuel": "✏️"}.get(
+                r.get("email_source"), "⚪"
+            )
+            st.markdown(f"{badge} **{r['family_name']}**")
+        with cols[2]:
+            new_email = st.text_input(
+                "Email", value=r.get("email", ""), key=f"campaign_mail_{i}",
+                label_visibility="collapsed", placeholder="email@exemple.com",
+            )
+            if new_email.strip() != r.get("email", ""):
+                r["email"] = new_email.strip()
+                r["email_source"] = "manuel" if new_email.strip() else ""
+
+    # ===========================
+    # 3️⃣  MESSAGE
+    # ===========================
+    st.markdown("---")
+    st.markdown("### 3️⃣  Message")
+
+    template = get_default_campaign_template()
+    subject = st.text_input("Objet", value=state.get("subject", template["subject"]),
+                            key="campaign_subject")
+    body = st.text_area("Message", value=state.get("body", template["body"]),
+                        height=340, key="campaign_body")
+    state["subject"], state["body"] = subject, body
+
+    st.caption("💡 `{famille}` dans l'objet ou le message est remplacé par le nom de la famille.")
+
+    if st.button("↩️ Revenir au texte par défaut", key="campaign_reset"):
+        state.pop("subject", None)
+        state.pop("body", None)
+        st.session_state.pop("campaign_subject", None)
+        st.session_state.pop("campaign_body", None)
+        st.rerun()
+
+    # ===========================
+    # 4️⃣  ENVOI
+    # ===========================
+    st.markdown("---")
+    st.markdown("### 4️⃣  Envoi")
+
+    selected = [
+        r for i, r in enumerate(recipients)
+        if st.session_state.get(f"campaign_sel_{i}") and r.get("email")
+    ]
+    st.info(f"📧 **{len(selected)}** destinataire(s) sélectionné(s) avec un email valide")
+
+    col_test, col_send = st.columns(2)
+
+    with col_test:
+        if st.button("🧪 M'envoyer un test", width="stretch", key="campaign_test"):
+            sender = secrets.get("gmail", {}).get("email", "")
+            sample = selected[:1] or [{"family_name": "Famille Test", "email": sender}]
+            result = run_send_campaign(secrets, sample, subject, body, send_to_test=True)
+            if result.get("success"):
+                st.success(f"✅ Test envoyé à {sender}")
+            else:
+                st.error(f"❌ {result.get('error')}")
+
+    with col_send:
+        confirmed = st.checkbox(
+            f"Je confirme l'envoi à {len(selected)} famille(s)", key="campaign_confirm"
+        )
+        if st.button("🚀 Envoyer la relance", type="primary", width="stretch",
+                     disabled=(not confirmed or not selected), key="campaign_send"):
+            progress = st.progress(0)
+            status = st.empty()
+
+            def callback(p, m):
+                progress.progress(p)
+                status.info(m)
+
+            result = run_send_campaign(secrets, selected, subject, body,
+                                       send_to_test=False, callback=callback)
+
+            if not result.get("success"):
+                st.error(f"❌ {result.get('error')}")
+            else:
+                sent = result.get("sent", 0)
+                total = result.get("total", 0)
+                errors = result.get("errors", [])
+
+                if errors:
+                    st.warning(f"⚠️ **{sent}/{total}** email(s) envoyé(s) — {len(errors)} erreur(s)")
+                    with st.expander(f"❌ {len(errors)} erreur(s)"):
+                        for err in errors:
+                            st.write(f"• {err}")
+                else:
+                    st.success(f"✅ **{sent}/{total}** email(s) envoyé(s) !")
+
+                if sent:
+                    with st.expander(f"✅ {sent} destinataire(s) contacté(s)"):
+                        for r in selected[:sent]:
+                            st.write(f"• **{r['family_name']}** — {r['email']}")
+
 
 def page_sync(ctx):
     st.markdown('<div class="section-title">🔄 Sync Stripe → Notion</div>', unsafe_allow_html=True)
