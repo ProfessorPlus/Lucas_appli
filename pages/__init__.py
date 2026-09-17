@@ -22,7 +22,7 @@ from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
 from scripts.send_campaign_emails import build_campaign_recipients, fetch_emails_from_notion, fill_missing_emails, get_default_campaign_template, run_send_campaign
-from scripts.revenue_stats import SOURCE_LABELS, compute_monthly_revenue, format_totals
+from scripts.revenue_stats import SOURCE_LABELS, compute_monthly_revenue, format_totals, load_month_extraction
 from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
@@ -3057,12 +3057,20 @@ def page_campaign(ctx):
             st.error("❌ Dossier introuvable en local et sur Drive.")
         else:
             try:
-                data_local = ctx.get("load_extracted_data", lambda: {})() or {}
+                current_data = ctx.get("load_extracted_data", lambda: {})() or {}
             except Exception:
-                data_local = {}
+                current_data = {}
+
+            # L'extraction courante ne couvre que le mois en cours : pour un mois
+            # passé, les emails viennent de l'archive TutorBird de ce mois-là.
+            # L'extraction courante passe en second pour garder un email mis à jour.
+            archive = load_month_extraction(
+                _folder_month_key(selected_folder), ctx["DATA_DIR"]
+            ) or {}
+            lookup_data = {**archive, **current_data}
 
             recipients = build_campaign_recipients(
-                folder_path, data_local, state.get("notion_emails")
+                folder_path, lookup_data, state.get("notion_emails")
             )
 
             for key in [k for k in st.session_state
@@ -3071,6 +3079,11 @@ def page_campaign(ctx):
 
             state["recipients"] = recipients
             state["folder_label"] = selected_label
+            state["archive_info"] = {
+                "month": _folder_month_key(selected_folder),
+                "archive_families": len(archive),
+                "current_families": len(current_data),
+            }
             st.rerun()
 
     recipients = state.get("recipients")
@@ -3089,6 +3102,22 @@ def page_campaign(ctx):
         f"✅ {len(recipients) - len(missing)} famille(s) avec email  •  "
         f"⚠️ {len(missing)} sans email"
     )
+
+    archive_info = state.get("archive_info") or {}
+    if archive_info:
+        if archive_info.get("archive_families"):
+            st.caption(
+                f"📦 Emails cherchés dans l'archive TutorBird de "
+                f"{archive_info['month']} ({archive_info['archive_families']} familles) "
+                f"+ l'extraction courante ({archive_info['current_families']} familles)."
+            )
+        else:
+            st.caption(
+                f"⚠️ Aucune archive TutorBird pour {archive_info['month']} "
+                f"(`full_output_tb_{archive_info['month']}.json`) : seule l'extraction "
+                f"courante ({archive_info['current_families']} familles) a été utilisée. "
+                "Complète via Notion ci-dessous."
+            )
 
     if missing and st.button("🔎 Compléter les emails manquants via Notion",
                              width="stretch", key="campaign_notion"):
@@ -3115,7 +3144,7 @@ def page_campaign(ctx):
 
     st.caption(
         "Décoche les familles à ne pas contacter. Un email peut être corrigé ou "
-        "ajouté directement dans le champ. 🟢 extraction · 🔵 Notion · ✏️ saisi à la main"
+        "ajouté directement dans le champ. 🟢 TutorBird · 🔵 Notion · ✏️ saisi à la main"
     )
 
     col_all, col_none = st.columns(2)
