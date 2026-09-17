@@ -3104,11 +3104,11 @@ def page_campaign(ctx):
     st.markdown("---")
     st.markdown(f"### 2️⃣  Destinataires — {state.get('folder_label', '')}")
 
+    # Le récapitulatif est rempli APRÈS l'affichage de la liste : les champs email
+    # peuvent encore modifier les données pendant leur rendu, et un compteur calculé
+    # avant divergerait de ce qui est réellement envoyé.
+    summary_slot = st.empty()
     missing = [r for r in recipients if not r.get("email")]
-    st.success(
-        f"✅ {len(recipients) - len(missing)} famille(s) avec email  •  "
-        f"⚠️ {len(missing)} sans email"
-    )
 
     archive_info = state.get("archive_info") or {}
     if archive_info:
@@ -3211,6 +3211,22 @@ def page_campaign(ctx):
                 r["email"] = new_email.strip()
                 r["email_source"] = "manuel" if new_email.strip() else ""
 
+    selected = [
+        r for i, r in enumerate(recipients)
+        if st.session_state.get(f"campaign_sel_{i}") and r.get("email")
+    ]
+    with_email = [r for r in recipients if r.get("email")]
+    unchecked = len(with_email) - len(selected)
+
+    summary = (
+        f"✅ {len(with_email)} famille(s) avec email  •  "
+        f"⚠️ {len(recipients) - len(with_email)} sans email  •  "
+        f"📧 {len(selected)} sélectionnée(s) pour l'envoi"
+    )
+    if unchecked:
+        summary += f"  ({unchecked} avec email mais décochée(s))"
+    summary_slot.success(summary)
+
     # ===========================
     # 3️⃣  MESSAGE
     # ===========================
@@ -3239,11 +3255,13 @@ def page_campaign(ctx):
     st.markdown("---")
     st.markdown("### 4️⃣  Envoi")
 
-    selected = [
-        r for i, r in enumerate(recipients)
-        if st.session_state.get(f"campaign_sel_{i}") and r.get("email")
-    ]
-    st.info(f"📧 **{len(selected)}** destinataire(s) sélectionné(s) avec un email valide")
+    info = f"📧 **{len(selected)}** destinataire(s) sélectionné(s) avec un email valide"
+    if unchecked:
+        info += (
+            f" — {unchecked} famille(s) ont un email mais sont décochées "
+            "(utilise « Tout sélectionner » pour les inclure)"
+        )
+    st.info(info)
 
     col_test, col_send = st.columns(2)
 
