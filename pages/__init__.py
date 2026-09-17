@@ -3073,9 +3073,14 @@ def page_campaign(ctx):
                 folder_path, lookup_data, state.get("notion_emails")
             )
 
+            # Purger les anciennes lignes puis écrire explicitement les nouvelles :
+            # une clé simplement supprimée laisse le widget afficher son ancienne valeur.
             for key in [k for k in st.session_state
                         if k.startswith(("campaign_sel_", "campaign_mail_"))]:
                 del st.session_state[key]
+            for i, recipient in enumerate(recipients):
+                st.session_state[f"campaign_mail_{i}"] = recipient.get("email", "")
+                st.session_state[f"campaign_sel_{i}"] = bool(recipient.get("email"))
 
             state.pop("complete_report", None)
             state.pop("complete_errors", None)
@@ -3132,6 +3137,7 @@ def page_campaign(ctx):
 
         report = []
         errors = []
+        had_email_before = [bool(r.get("email")) for r in recipients]
 
         tb_result = fetch_emails_from_tutorbird(secrets, callback=callback)
         if tb_result.get("success"):
@@ -3149,8 +3155,14 @@ def page_campaign(ctx):
             else:
                 errors.append(f"Notion : {notion_result.get('error')}")
 
-        for key in [k for k in st.session_state if k.startswith("campaign_mail_")]:
-            del st.session_state[key]
+        # Supprimer la clé d'un widget déjà affiché ne le rafraîchit pas : Streamlit
+        # réutilise la valeur que le navigateur lui renvoie. Il faut l'écrire.
+        # Les lignes nouvellement renseignées sont cochées, sinon elles resteraient
+        # décochées (leur case a été créée quand l'email était encore vide).
+        for i, recipient in enumerate(recipients):
+            if not had_email_before[i] and recipient.get("email"):
+                st.session_state[f"campaign_mail_{i}"] = recipient["email"]
+                st.session_state[f"campaign_sel_{i}"] = True
 
         state["complete_report"] = " • ".join(report)
         state["complete_errors"] = errors
