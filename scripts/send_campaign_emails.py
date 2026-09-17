@@ -64,6 +64,101 @@ def list_families_in_folder(invoice_folder):
     return names
 
 
+def _any_email(obj):
+    """Extrait un email quelle que soit la forme renvoyée par TutorBird.
+
+    L'API est incohérente : `Email` est tantôt un dict {'EmailAddress': ...},
+    tantôt une chaîne directe (le code d'extraction des profs gère déjà les deux).
+    """
+    if not obj:
+        return ""
+
+    if isinstance(obj, str):
+        return obj.strip() if "@" in obj else ""
+
+    if isinstance(obj, dict):
+        for key in ("EmailAddress", "Email", "PrimaryEmail", "EmailAddress1"):
+            found = _any_email(obj.get(key))
+            if found:
+                return found
+
+    return ""
+
+
+def _tutorbird_get(endpoint, headers, callback=None):
+    """GET sur l'API TutorBird. Retourne [] si l'endpoint n'existe pas."""
+    try:
+        response = requests.get(
+            f"https://api.tutorbird.com/v1/{endpoint}", headers=headers, timeout=30
+        )
+        if not response.ok:
+            return []
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload.get("ItemSubset") or payload.get("Items") or []
+        return payload or []
+    except Exception:
+        return []
+
+
+def fetch_emails_from_tutorbird(secrets, callback=None):
+    """Map {nom normalisé: email} depuis TutorBird (parents, familles, étudiants).
+
+    L'extraction mensuelle ne retient que l'email de la fiche parent ; quand le
+    contact est porté par la famille ou l'étudiant, elle ressort vide. On ratisse
+    donc les trois endpoints pour combler ces trous.
+    """
+    def update(progress, message):
+        if callback:
+            callback(progress, message)
+
+    try:
+        api_key = secrets["tutorbird"]["api_key"]
+    except (KeyError, TypeError):
+        return {"success": False, "error": "Clé API TutorBird manquante (tutorbird.api_key)."}
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    emails = {}
+    by_family_id = {}
+
+    def register(name, email):
+        key = normalize(name)
+        if key and email:
+            emails.setdefault(key, email)
+
+    update(20, "👨‍👩‍👧 Parents TutorBird...")
+    for parent in _tutorbird_get("parents", headers):
+        email = _any_email(parent.get("Email"))
+        if not email:
+            continue
+        last, first = parent.get("LastName") or "", parent.get("FirstName") or ""
+        register(f"{last} {first}", email)
+        register(f"{first} {last}", email)
+        if parent.get("FamilyID"):
+            by_family_id.setdefault(parent["FamilyID"], email)
+
+    update(50, "🏠 Familles TutorBird...")
+    for family in _tutorbird_get("families", headers):
+        email = _any_email(family.get("Email")) or _any_email(family)
+        family_id = family.get("ID") or family.get("FamilyID")
+        if email and family_id:
+            by_family_id.setdefault(family_id, email)
+        name = family.get("Name") or family.get("FamilyName") or ""
+        if email and name:
+            register(name, email)
+
+    update(75, "🎓 Étudiants TutorBird...")
+    for student in _tutorbird_get("students", headers):
+        family_id = student.get("FamilyID")
+        family_name = student.get("FamilyName") or ""
+        email = _any_email(student.get("Email")) or by_family_id.get(family_id, "")
+        if email and family_name:
+            register(family_name, email)
+
+    update(100, f"✅ {len(emails)} email(s) trouvé(s) dans TutorBird")
+    return {"success": True, "emails": emails}
+
+
 def fetch_emails_from_notion(secrets, callback=None):
     """Construit {nom de famille normalisé: email} depuis la base Paiements Notion.
 
@@ -129,9 +224,9 @@ def fetch_emails_from_notion(secrets, callback=None):
         return {"success": False, "error": str(e)}
 
 
-def fill_missing_emails(recipients, notion_emails):
+def fill_missing_emails(recipients, found_emails, source="notion"):
     """Complète les emails vides depuis une map {nom normalisé: email}. Retourne le nombre rempli."""
-    if not notion_emails:
+    if not found_emails:
         return 0
 
     filled = 0
@@ -140,16 +235,16 @@ def fill_missing_emails(recipients, notion_emails):
             continue
 
         name = recipient.get("family_name", "")
-        email = notion_emails.get(normalize(name), "")
+        email = found_emails.get(normalize(name), "")
         if not email:
-            for notion_key, notion_email in notion_emails.items():
-                if names_match(notion_key, name):
-                    email = notion_email
+            for found_key, found_email in found_emails.items():
+                if names_match(found_key, name):
+                    email = found_email
                     break
 
         if email:
             recipient["email"] = email
-            recipient["email_source"] = "notion"
+            recipient["email_source"] = source
             filled += 1
 
     return filled
@@ -167,15 +262,23 @@ def build_campaign_recipients(invoice_folder, data, notion_emails=None):
         email = ""
         source = ""
 
+        # On continue de chercher tant qu'aucun email n'est trouvé : une famille
+        # peut apparaître plusieurs fois (doublon, fiche sans contact) et le premier
+        # nom qui correspond n'est pas forcément celui qui porte l'email.
+        matched_name = ""
         for fam in (data or {}).values():
-            candidate = fam.get("parent_name") or fam.get("family_name") or ""
-            if candidate and names_match(candidate, display_name):
-                email = _extract_email_candidate(fam)
-                if email:
-                    source = "extraction"
-                    if candidate.strip():
-                        display_name = candidate.strip()
+            candidate = (fam.get("parent_name") or fam.get("family_name") or "").strip()
+            if not candidate or not names_match(candidate, display_name):
+                continue
+            if not matched_name:
+                matched_name = candidate
+            found = _extract_email_candidate(fam)
+            if found:
+                email, source, matched_name = found, "tutorbird", candidate
                 break
+
+        if matched_name:
+            display_name = matched_name
 
         recipients.append({
             "folder_name": folder_name,

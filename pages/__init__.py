@@ -21,7 +21,7 @@ from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
-from scripts.send_campaign_emails import build_campaign_recipients, fetch_emails_from_notion, fill_missing_emails, get_default_campaign_template, run_send_campaign
+from scripts.send_campaign_emails import build_campaign_recipients, fetch_emails_from_notion, fetch_emails_from_tutorbird, fill_missing_emails, get_default_campaign_template, run_send_campaign
 from scripts.revenue_stats import SOURCE_LABELS, compute_monthly_revenue, format_totals, load_month_extraction
 from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
@@ -3077,6 +3077,8 @@ def page_campaign(ctx):
                         if k.startswith(("campaign_sel_", "campaign_mail_"))]:
                 del st.session_state[key]
 
+            state.pop("complete_report", None)
+            state.pop("complete_errors", None)
             state["recipients"] = recipients
             state["folder_label"] = selected_label
             state["archive_info"] = {
@@ -3119,8 +3121,8 @@ def page_campaign(ctx):
                 "Complète via Notion ci-dessous."
             )
 
-    if missing and st.button("🔎 Compléter les emails manquants via Notion",
-                             width="stretch", key="campaign_notion"):
+    if missing and st.button("🔎 Compléter les emails manquants (TutorBird + Notion)",
+                             width="stretch", key="campaign_complete_emails"):
         progress = st.progress(0)
         status = st.empty()
 
@@ -3128,19 +3130,36 @@ def page_campaign(ctx):
             progress.progress(p)
             status.info(m)
 
-        result = fetch_emails_from_notion(secrets, callback=callback)
-        if not result.get("success"):
-            st.error(f"❌ {result.get('error')}")
+        report = []
+        errors = []
+
+        tb_result = fetch_emails_from_tutorbird(secrets, callback=callback)
+        if tb_result.get("success"):
+            filled_tb = fill_missing_emails(recipients, tb_result.get("emails", {}), source="tutorbird")
+            report.append(f"🦜 TutorBird : {filled_tb}")
         else:
-            notion_emails = result.get("emails", {})
-            state["notion_emails"] = notion_emails
-            filled = fill_missing_emails(recipients, notion_emails)
+            errors.append(f"TutorBird : {tb_result.get('error')}")
 
-            for key in [k for k in st.session_state if k.startswith("campaign_mail_")]:
-                del st.session_state[key]
+        if any(not r.get("email") for r in recipients):
+            notion_result = fetch_emails_from_notion(secrets, callback=callback)
+            if notion_result.get("success"):
+                state["notion_emails"] = notion_result.get("emails", {})
+                filled_notion = fill_missing_emails(recipients, state["notion_emails"])
+                report.append(f"🔵 Notion : {filled_notion}")
+            else:
+                errors.append(f"Notion : {notion_result.get('error')}")
 
-            st.success(f"✅ {filled} email(s) complété(s) depuis Notion")
-            st.rerun()
+        for key in [k for k in st.session_state if k.startswith("campaign_mail_")]:
+            del st.session_state[key]
+
+        state["complete_report"] = " • ".join(report)
+        state["complete_errors"] = errors
+        st.rerun()
+
+    if state.get("complete_report"):
+        st.caption(f"✅ Emails complétés — {state['complete_report']}")
+    for err in state.get("complete_errors") or []:
+        st.warning(f"⚠️ {err}")
 
     st.caption(
         "Décoche les familles à ne pas contacter. Un email peut être corrigé ou "
@@ -3167,7 +3186,7 @@ def page_campaign(ctx):
                 key=f"campaign_sel_{i}", label_visibility="collapsed",
             )
         with cols[1]:
-            badge = {"extraction": "🟢", "notion": "🔵", "manuel": "✏️"}.get(
+            badge = {"tutorbird": "🟢", "notion": "🔵", "manuel": "✏️"}.get(
                 r.get("email_source"), "⚪"
             )
             st.markdown(f"{badge} **{r['family_name']}**")
