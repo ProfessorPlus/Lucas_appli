@@ -22,6 +22,7 @@ from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
 from scripts.send_payment_reminders import run_send_reminders, get_default_reminder_template, get_unpaid_families_from_notion, should_send_automatic_reminder
 from scripts.send_campaign_emails import build_campaign_recipients, fetch_emails_from_notion, fill_missing_emails, get_default_campaign_template, run_send_campaign
+from scripts.revenue_stats import compute_monthly_revenue, format_totals, load_payment_links, to_eur
 from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
@@ -2975,9 +2976,65 @@ def page_campaign(ctx):
         st.info("Aucun dossier de factures trouvé (local + Drive).")
         return
 
-    choices = [f"{f.get('year', '')} / {f.get('month', '')}" for f in folders]
+    if "monthly_revenue" not in state:
+        state["monthly_revenue"] = compute_monthly_revenue(
+            load_payment_links(ctx["DATA_DIR"])
+        )
+    monthly_revenue = state["monthly_revenue"]
+
+    def _folder_month_key(folder):
+        dt = _parse_invoice_folder_dt(folder.get("month", ""))
+        return dt.strftime("%Y-%m") if dt != datetime.min else ""
+
+    choices = []
+    for f in folders:
+        label = f"{f.get('year', '')} / {f.get('month', '')}"
+        stats = monthly_revenue.get(_folder_month_key(f))
+        if stats:
+            label += f"  —  💰 {format_totals(stats['totals'])}"
+        choices.append(label)
+
     selected_label = st.selectbox("Mois à relancer", choices, key="campaign_folder_pick")
     selected_folder = folders[choices.index(selected_label)]
+
+    selected_stats = monthly_revenue.get(_folder_month_key(selected_folder))
+    if selected_stats:
+        month_key = _folder_month_key(selected_folder)
+        year, month = int(month_key[:4]), int(month_key[5:7])
+
+        eur_label = "—"
+        try:
+            eur_label = f"≈ {to_eur(selected_stats['totals'], year, month):,.0f} €".replace(",", " ")
+        except Exception:
+            pass
+
+        col_ca, col_eur, col_fam = st.columns(3)
+        col_ca.metric("💰 CA facturé", format_totals(selected_stats["totals"]))
+        col_eur.metric("≈ Équivalent EUR", eur_label)
+        col_fam.metric("👨‍👩‍👧 Familles facturées", selected_stats["families"])
+    else:
+        st.caption("ℹ️ Aucun lien de paiement trouvé pour ce mois — CA indisponible.")
+
+    with st.expander("📊 Chiffre d'affaires de tous les mois"):
+        if not monthly_revenue:
+            st.info("Aucun lien de paiement enregistré (`payment_links_output.json` vide ou absent).")
+        else:
+            rows = ["| Mois | CA facturé | Familles | Liens |", "|---|---|---|---|"]
+            for month_key in sorted(monthly_revenue, reverse=True):
+                stats = monthly_revenue[month_key]
+                rows.append(
+                    f"| {month_key} | {format_totals(stats['totals'])} | "
+                    f"{stats['families']} | {stats['links']} |"
+                )
+            st.markdown("\n".join(rows))
+            st.caption(
+                "Montants facturés via les liens de paiement Stripe, groupés par mois "
+                "de génération. Devises natives, sans conversion."
+            )
+
+        if st.button("🔄 Rafraîchir le CA", key="campaign_refresh_ca"):
+            state.pop("monthly_revenue", None)
+            st.rerun()
 
     if st.button("👥 Charger les familles de ce mois", type="primary",
                  width="stretch", key="campaign_load"):
