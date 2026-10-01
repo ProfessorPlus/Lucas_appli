@@ -4944,9 +4944,25 @@ def page_edit_invoice(ctx):
         st.metric("Total (somme auto)", f"{auto_total:.2f} {f['currency']}")
         f["total_due"] = auto_total
 
+    # Lien Stripe fraîchement généré : il faut l'injecter dans st.session_state
+    # AVANT que le text_input soit instancié. Un widget qui porte une `key`
+    # restaure sa valeur depuis st.session_state[key] à chaque rerun et ignore
+    # l'argument `value` — écrire f["pay_link_url"] puis st.rerun() se faisait
+    # donc écraser par la valeur vide du widget, et la facture repartait sur le
+    # fallback https://example.com. Écrire session_state après l'instanciation
+    # n'est pas une option non plus : Streamlit lève StreamlitAPIException.
+    # On ne passe plus d'argument `value` : il serait ignoré au rerun (la key fait
+    # foi) et Streamlit avertirait sur la double source. On amorce donc
+    # st.session_state nous-mêmes, toujours AVANT d'instancier le widget.
+    _pending_link = state.pop("pending_pay_link", None)
+    if _pending_link:
+        st.session_state["edit_inv_pay_link"] = _pending_link
+        st.success(f"✅ Lien Stripe créé : {_pending_link}")
+    else:
+        st.session_state.setdefault("edit_inv_pay_link", f.get("pay_link_url", "") or "")
+
     f["pay_link_url"] = st.text_input(
         "Lien de paiement Stripe (URL du bouton 'Cliquez ici pour payer')",
-        f.get("pay_link_url", ""),
         key="edit_inv_pay_link",
     )
 
@@ -5017,8 +5033,9 @@ def page_edit_invoice(ctx):
                     teacher_share=teacher_share,
                 )
                 if result.get("success"):
-                    f["pay_link_url"] = result["url"]
-                    st.success(f"✅ Lien créé : {result['url']}")
+                    # Passe par un slot "en attente" : appliqué au prochain run,
+                    # juste avant l'instanciation du widget (voir plus haut).
+                    state["pending_pay_link"] = result["url"]
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error')}")
@@ -5037,6 +5054,16 @@ def page_edit_invoice(ctx):
     # ===========================
     st.markdown("---")
     st.markdown("### 3️⃣  Générer & Exporter")
+
+    # Garde-fou : sans lien, _build_invoice_pdf retombe sur https://example.com et
+    # produit une facture d'apparence normale dont le bouton "Cliquez ici pour
+    # payer" ne mène nulle part. Mieux vaut le voir avant de l'envoyer au client.
+    if not (f.get("pay_link_url") or "").strip():
+        st.warning(
+            "⚠️ Aucun lien de paiement Stripe renseigné. Le bouton « Cliquez ici pour "
+            "payer en ligne » du PDF pointera vers une page d'exemple inutilisable. "
+            "Génère le lien ci-dessus (ou colle-le) avant d'envoyer la facture."
+        )
 
     if st.button("📄 Générer le PDF édité", type="primary", width="stretch", key="edit_inv_generate"):
         try:
