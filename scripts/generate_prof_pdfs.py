@@ -164,6 +164,12 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
     under the metric cards (page 1 only) for legal/billing transparency.
     """
     
+    # Devise de paie du prof. "CHF" => toute l'attestation est libellée en CHF
+    # (il est payé directement en francs, pas de conversion à l'affichage).
+    payout_currency = (data.get("payout_currency") or "EUR").upper()
+    is_chf_payout = payout_currency == "CHF"
+    sym = "CHF" if is_chf_payout else "€"
+
     total_eur_raw = data.get("eur", 0) + data.get("chf_as_eur", 0)
     nb_lessons = data.get("nb_lessons", 0)
     details = data.get("details", [])
@@ -179,6 +185,23 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
     # Utiliser la somme des montants détaillés (déjà arrondis) pour cohérence
     total_eur_from_details = sum(d.get("amount_eur", 0) for d in details)
     total_eur = total_eur_from_details if details else total_eur_raw
+
+    def row_amount(d):
+        """Montant d'une ligne dans la devise de paie."""
+        if not is_chf_payout:
+            return d.get("amount_eur", 0) or 0
+        chf = d.get("amount_chf")
+        if chf:
+            return chf
+        # Ligne saisie en EUR sur une attestation CHF : on reconvertit pour
+        # que le document reste dans une seule devise.
+        eur = d.get("amount_eur", 0) or 0
+        return (eur / fx_rate) if fx_rate else eur
+
+    # Total affiché : recap_profs fournit déjà le montant dans la bonne devise.
+    total_display = data.get("total_payout")
+    if total_display is None:
+        total_display = sum(row_amount(d) for d in details) if details else total_eur_raw
     
     sorted_d = sorted(details, key=lambda d: d["date"])
     
@@ -279,7 +302,7 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
                 (card1_w, "PROFESSEUR", teacher_name, TXT, 13),
                 (card_sm, "LEÇONS", str(nb_lessons), NAVY, 22),
                 (card_sm, "HEURES", total_hours_display, NAVY, 22),
-                (card4_w, "TOTAL", f"{total_eur:,.2f} €", GREEN, 18),
+                (card4_w, "TOTAL", f"{total_display:,.2f} {sym}", GREEN, 18),
             ]
             
             cx = MX
@@ -439,10 +462,10 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
             rx += cols[3]
             
             # Montant
-            amt = d.get("amount_eur", 0)
+            amt = row_amount(d)
             tot_amt += amt
             c.setFont(FB, 9)
-            c.drawRightString(rx + cols[4] - 12, ry, f"{amt:,.2f} €")
+            c.drawRightString(rx + cols[4] - 12, ry, f"{amt:,.2f} {sym}")
             
             y -= rh
             row_idx += 1
@@ -471,7 +494,7 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
             
             c.setFillColor(GREEN)
             c.setFont(FB, 15)
-            c.drawRightString(tx0 + tw - 12, y - trh + 10, f"{tot_amt:,.2f} €")
+            c.drawRightString(tx0 + tw - 12, y - trh + 10, f"{tot_amt:,.2f} {sym}")
             
             y -= trh
             
@@ -483,7 +506,10 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
             
             c.setFillColor(TXT_LIGHT)
             c.setFont(F, 7)
-            c.drawString(MX, fy, f"Taux de change appliqué : 1 CHF = {fx_rate} EUR (source: {fx_source})")
+            # Sur une attestation en CHF, aucun change n'est appliqué : le prof
+            # est payé directement en francs, la mention n'aurait pas de sens.
+            if not is_chf_payout:
+                c.drawString(MX, fy, f"Taux de change appliqué : 1 CHF = {fx_rate} EUR (source: {fx_source})")
             c.drawRightString(PW - MX, fy, "Généré automatiquement — Professor+")
 
 

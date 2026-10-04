@@ -4082,12 +4082,13 @@ def page_config(ctx):
                 table_data = []
                 for name in teacher_names:
                     t_data = teachers[name]
-                    auto_chf = t_data.get("auto_chf", False)
+                    # Devise de paie : coché = payé en CHF, sinon payé en EUR.
+                    paye_chf = str(t_data.get("pay_currency", "")).strip().upper() == "CHF"
                     table_data.append({
                         "Professeur": name,
                         "CHF/h": float(t_data.get("pay_rate", {}).get("chf", 0)),
                         "EUR/h": float(t_data.get("pay_rate", {}).get("eur", 0)),
-                        "Auto CHF": auto_chf,
+                        "Payé en CHF": paye_chf,
                         "Stripe Connect ID": t_data.get("connect_account_id") or "",
                         "Nom légal": t_data.get("legal_name") or "",
                         "SIREN": t_data.get("siren") or "",
@@ -4119,9 +4120,16 @@ def page_config(ctx):
                             format="%.2f",
                             width="small"
                         ),
-                        "Auto CHF": st.column_config.CheckboxColumn(
-                            "🔄 Auto",
-                            help="Si coché, le taux CHF est calculé automatiquement pour que la conversion CHF→EUR donne exactement le taux EUR indiqué",
+                        "Payé en CHF": st.column_config.CheckboxColumn(
+                            "🇨🇭 Payé en CHF",
+                            help=(
+                                "Coché : le prof est payé en francs, à son taux CHF/h. "
+                                "L'équivalent en euros affiché dans la paie est calculé au taux "
+                                "moyen du marché.\n\n"
+                                "Décoché (défaut) : le prof est payé exactement à son taux EUR/h, "
+                                "sans conversion — le montant ne bouge donc jamais avec le change.\n\n"
+                                "La devise du client n'entre plus en compte."
+                            ),
                             width="small",
                             default=False
                         ),
@@ -4150,16 +4158,18 @@ def page_config(ctx):
                     key="teachers_table"
                 )
                 
-                # Aperçu des taux auto-calculés
-                auto_preview = []
+                # Alerte : un prof sans taux dans sa devise de paie serait payé 0.
+                sans_taux = []
                 for row in edited_df:
-                    if row.get("Auto CHF") and row["EUR/h"] > 0 and fx_rate > 0:
-                        computed_chf = round(row["EUR/h"] / fx_rate, 2)
-                        if abs(computed_chf - row["CHF/h"]) > 0.01:
-                            auto_preview.append(f"**{row['Professeur']}** : CHF/h {row['CHF/h']:.2f} → **{computed_chf:.2f}** (pour obtenir {row['EUR/h']:.2f} €)")
-                
-                if auto_preview:
-                    st.warning("🔄 **Auto CHF — Modifications à appliquer :**\n" + "\n".join(f"- {p}" for p in auto_preview))
+                    if row.get("Payé en CHF") and not row["CHF/h"]:
+                        sans_taux.append(f"**{row['Professeur']}** : payé en CHF mais aucun taux CHF/h")
+                    elif not row.get("Payé en CHF") and not row["EUR/h"]:
+                        sans_taux.append(f"**{row['Professeur']}** : payé en EUR mais aucun taux EUR/h")
+                if sans_taux:
+                    st.warning(
+                        "⚠️ **Ces profs seraient payés 0 — renseigne leur taux :**\n"
+                        + "\n".join(f"- {p}" for p in sans_taux)
+                    )
                 
                 col1, col2 = st.columns(2)
                 
@@ -4170,15 +4180,16 @@ def page_config(ctx):
                             if name in teachers:
                                 eur_rate = float(row["EUR/h"])
                                 chf_rate = float(row["CHF/h"])
-                                is_auto = row.get("Auto CHF", False)
-                                
-                                # Si Auto CHF activé, recalculer CHF depuis EUR
-                                if is_auto and eur_rate > 0 and fx_rate > 0:
-                                    chf_rate = round(eur_rate / fx_rate, 2)
-                                
+                                paye_chf = bool(row.get("Payé en CHF", False))
+
+                                # Les deux taux sont désormais saisis tels quels :
+                                # plus aucun recalcul automatique du CHF depuis l'EUR.
+                                # C'est la devise de paie qui décide lequel est utilisé,
+                                # donc plus de dérive à rattraper quand le change bouge.
                                 teachers[name]["pay_rate"]["chf"] = chf_rate
                                 teachers[name]["pay_rate"]["eur"] = eur_rate
-                                teachers[name]["auto_chf"] = is_auto
+                                teachers[name]["pay_currency"] = "CHF" if paye_chf else "EUR"
+                                teachers[name].pop("auto_chf", None)
                                 teachers[name]["connect_account_id"] = (row["Stripe Connect ID"] or "").strip()
                                 # Nom légal + SIREN : on enregistre si rempli, on enlève la clé si vidée
                                 _ln = (row.get("Nom légal") or "").strip()

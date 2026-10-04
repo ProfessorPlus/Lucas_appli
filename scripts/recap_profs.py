@@ -354,20 +354,35 @@ def compute_teacher_recap(
             return float(upper)
         return round(amount, 2)
     
-    # Build set of auto_chf teachers
-    auto_chf_teachers = set()
+    # Devise de paie, définie PAR PROFESSEUR (secrets.yaml -> pay_currency).
+    # Auparavant cétait la devise du CLIENT qui décidait (familles_euros.yaml),
+    # ce qui obligeait à recaler sans cesse les taux CHF pour retomber sur le
+    # montant EUR voulu. Désormais :
+    #   - pay_currency absent ou "EUR" (défaut) -> payé exactement son taux EUR,
+    #     sans aucune conversion, donc sans dérive quand le change bouge ;
+    #   - pay_currency = "CHF" -> payé son taux CHF ; l'équivalent EUR affiché
+    #     dans le récap est calculé au taux moyen du marché.
+    # familles_euros.yaml continue de piloter la facturation CLIENT, inchangée.
+    chf_paid_teachers = set()
     for cfg_name, cfg_data in teachers_cfg.items():
-        if cfg_data.get("auto_chf"):
-            auto_chf_teachers.add(norm(cfg_name))
+        if str((cfg_data or {}).get("pay_currency", "")).strip().upper() == "CHF":
+            chf_paid_teachers.add(norm(cfg_name))
 
     # Compute
+    # "eur"        : montants dûs en EUR (profs payés en euros)
+    # "chf"        : montants dûs en CHF, bruts, NON convertis
+    # "chf_as_eur" : les mêmes, convertis en EUR pour l'affichage de ton récap
+    # "payout_currency" : devise dans laquelle le prof est réellement payé,
+    #                     et donc dans laquelle son attestation est libellée
     teacher_totals = defaultdict(
-        lambda: {"eur": 0.0, "chf_as_eur": 0.0, "nb_lessons": 0, "total_hours": 0.0, "details": []}
+        lambda: {"eur": 0.0, "chf_as_eur": 0.0, "chf": 0.0, "payout_currency": "EUR",
+                 "nb_lessons": 0, "total_hours": 0.0, "details": []}
     )
 
     for fam in data.values():
         parent = fam.get("parent_name") or ""
-        is_eur = norm(parent) in euro_parents
+        # NB : la devise de paie ne dépend plus de la famille (euro_parents
+        # ne sert plus quà la facturation client, hors de cette fonction).
 
         for lesson in fam.get("lessons", []):
             status = lesson.get("attendance_status", "")
@@ -399,6 +414,7 @@ def compute_teacher_recap(
                 if lesson.get("is_fee"):
                     fee_amount = float(lesson.get("amount", 0) or 0)
                     fee_devise = lesson.get("notion_devise_prof", "EUR")
+                    amount_chf_row = 0.0
                     if fee_devise == "EUR":
                         teacher_totals[t_name]["eur"] += fee_amount
                         currency_label = "EUR (Frais)"
@@ -407,6 +423,9 @@ def compute_teacher_recap(
                         ensure_fx()
                         amount_eur = smart_round(fee_amount * CHF_TO_EUR)
                         teacher_totals[t_name]["chf_as_eur"] += amount_eur
+                        teacher_totals[t_name]["chf"] += fee_amount
+                        teacher_totals[t_name]["payout_currency"] = "CHF"
+                        amount_chf_row = fee_amount
                         currency_label = "CHF→EUR (Frais)"
                     # Date affichée : 'Mai 2026' si mois_label présent, comme
                     # pour les leçons standards.
@@ -425,6 +444,7 @@ def compute_teacher_recap(
                         "duration_min": 0,
                         "rate": 0,
                         "amount_eur": round(amount_eur, 2),
+                        "amount_chf": round(amount_chf_row, 2) if amount_chf_row else None,
                         "is_fee": True,
                     })
                     continue
@@ -433,6 +453,7 @@ def compute_teacher_recap(
                 notion_rate = float(lesson.get("notion_taux_prof") or 0)
                 notion_devise = lesson.get("notion_devise_prof", "EUR")
 
+                amount_chf_row = 0.0
                 if notion_devise == "EUR":
                     amount_eur = notion_rate * hours
                     teacher_totals[t_name]["eur"] += amount_eur
@@ -443,6 +464,10 @@ def compute_teacher_recap(
                     amount_eur = amount_chf * CHF_TO_EUR
                     amount_eur = smart_round(amount_eur)
                     teacher_totals[t_name]["chf_as_eur"] += amount_eur
+                    teacher_totals[t_name]["chf"] += amount_chf
+                    # Devise Notion = CHF -> attestation libellée en CHF.
+                    teacher_totals[t_name]["payout_currency"] = "CHF"
+                    amount_chf_row = amount_chf
                     currency_label = "CHF→EUR (Notion)"
                 
                 teacher_totals[t_name]["nb_lessons"] += 1
@@ -466,6 +491,7 @@ def compute_teacher_recap(
                     "duration_min": duration,
                     "rate": notion_rate,
                     "amount_eur": round(amount_eur, 2),
+                    "amount_chf": round(amount_chf_row, 2) if amount_chf_row else None,
                 })
                 continue
 
@@ -481,6 +507,13 @@ def compute_teacher_recap(
 
             special, special_currency = get_special_rate(t_name, parent, lesson.get("student"))
 
+            # Devise de paie du prof (défaut EUR).
+            pays_chf = (norm(t_name) in chf_paid_teachers
+                        or norm(cfg_key) in chf_paid_teachers)
+            if pays_chf:
+                teacher_totals[cfg_key]["payout_currency"] = "CHF"
+            amount_chf_row = 0.0
+
             if special is not None:
                 rate = special
                 if special_currency == "CHF":
@@ -490,13 +523,16 @@ def compute_teacher_recap(
                     amount_eur = amount_chf * CHF_TO_EUR
                     amount_eur = smart_round(amount_eur)
                     teacher_totals[cfg_key]["chf_as_eur"] += amount_eur
+                    teacher_totals[cfg_key]["chf"] += amount_chf
+                    amount_chf_row = amount_chf
                     currency_label = "CHF→EUR★"
                 else:
                     # Tarif spécial en EUR (défaut)
                     amount_eur = rate * hours
                     teacher_totals[cfg_key]["eur"] += amount_eur
                     currency_label = "EUR★"
-            elif is_eur:
+            elif not pays_chf:
+                # Payé en euros : exactement son taux EUR, aucun change.
                 rate = pay.get("eur", 0)
                 amount_eur = rate * hours
                 teacher_totals[cfg_key]["eur"] += amount_eur
@@ -510,11 +546,13 @@ def compute_teacher_recap(
 
                 amount_eur = amount_chf * CHF_TO_EUR
                 
-                # Arrondi intelligent pour les profs avec auto_chf coché
-                if norm(t_name) in auto_chf_teachers or norm(cfg_key) in auto_chf_teachers:
-                    amount_eur = smart_round(amount_eur)
+                # Arrondi intelligent sur l'équivalent EUR affiché (le montant
+                # qui fait foi reste le CHF, cf. total_payout).
+                amount_eur = smart_round(amount_eur)
                 
                 teacher_totals[cfg_key]["chf_as_eur"] += amount_eur
+                teacher_totals[cfg_key]["chf"] += amount_chf
+                amount_chf_row = amount_chf
                 currency_label = "CHF→EUR"
 
             teacher_totals[cfg_key]["nb_lessons"] += 1
@@ -528,8 +566,19 @@ def compute_teacher_recap(
                     "duration_min": duration,
                     "rate": rate,
                     "amount_eur": round(amount_eur, 2),
+                    "amount_chf": round(amount_chf_row, 2) if amount_chf_row else None,
                 }
             )
+
+    # Montant réellement dû à chaque prof, dans SA devise de paie. Pour un prof
+    # payé en CHF, d'éventuels montants en EUR sont reconvertis en CHF afin que
+    # son attestation reste entièrement libellée dans une seule devise.
+    for _d in teacher_totals.values():
+        if _d["payout_currency"] == "CHF":
+            _extra = (_d["eur"] / CHF_TO_EUR) if (_d["eur"] and CHF_TO_EUR) else 0.0
+            _d["total_payout"] = round(_d["chf"] + _extra, 2)
+        else:
+            _d["total_payout"] = round(_d["eur"] + _d["chf_as_eur"], 2)
 
     grand_total = sum(d["eur"] + d["chf_as_eur"] for d in teacher_totals.values())
     total_lessons = sum(d["nb_lessons"] for d in teacher_totals.values())
