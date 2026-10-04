@@ -21,13 +21,55 @@ import requests
 from datetime import datetime
 
 
-# Pattern : "Ajouter 15 euros de frais de déplacement", insensible casse/accents.
-# Captures la valeur numérique (int ou décimal avec , ou .). Cherché dans la
-# colonne Notion "Détails heures" pour ajouter un supplément au total facturé.
+# Pattern : "Ajouter 15 CHF de frais de déplacement", écrit à la main dans la
+# colonne Notion "Détails heures" — donc volontairement tolérant :
+#   - "ajouter" ou "rajouter"
+#   - montant entier ou décimal, virgule ou point ("12,50")
+#   - devise EUR / € / CHF / francs, collée ou espacée, ou absente (on retombe
+#     alors sur la devise de la ligne Notion)
+#   - "frais de déplacement" au singulier comme au pluriel, accentué ou non
+# Groupe 1 = montant, groupe 2 = devise écrite (ou None).
+#
+# Historique : le motif n'acceptait que les euros et exigeait le singulier.
+# "Ajouter 15 CHF de frais de déplacements" passait donc totalement inaperçu :
+# ni payé au prof, ni facturé au client, et sans aucune alerte.
 _FRAIS_DEP_PATTERN = re.compile(
-    r"\bajouter\s+(\d+(?:[.,]\d+)?)\s*(?:eur(?:os?)?|€)\s+(?:de\s+)?frais\s+de\s+d[ée]placement\b",
+    r"\br?ajouter\s+"
+    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(eur(?:os?)?|€|chf|francs?)?\s*"
+    r"(?:de\s+)?frais\s+de\s+d[ée]placements?",
     re.IGNORECASE,
 )
+
+
+def _normalize_devise(raw, fallback):
+    """Devise écrite dans "Détails heures" -> 'EUR' / 'CHF'.
+
+    Si rien n'est écrit (ou mot inconnu), on garde la devise de la ligne Notion.
+    """
+    token = (raw or "").strip().lower().rstrip(".")
+    if token in {"eur", "euro", "euros", "€"}:
+        return "EUR"
+    if token in {"chf", "franc", "francs"}:
+        return "CHF"
+    return (fallback or "EUR").upper()
+
+
+def parse_frais_deplacement(text, fallback_devise="EUR"):
+    """Extrait (montant, devise) des frais de déplacement d'un texte libre.
+
+    Retourne (0.0, None) si aucun frais n'est mentionné.
+    """
+    m = _FRAIS_DEP_PATTERN.search(text or "")
+    if not m:
+        return 0.0, None
+    try:
+        amount = float(m.group(1).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0, None
+    if amount <= 0:
+        return 0.0, None
+    return amount, _normalize_devise(m.group(2), fallback_devise)
 
 
 def _parse_french_amount(text):
@@ -314,32 +356,33 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
         # leçon-supplément distincte (visible en ligne dédiée sur le PDF,
         # comprise dans le total facturé et dans le lien Stripe).
         details_str = entry.get("details_heures", "") or ""
-        m_frais = _FRAIS_DEP_PATTERN.search(details_str)
-        if m_frais:
-            try:
-                frais_amount = float(m_frais.group(1).replace(",", "."))
-            except ValueError:
-                frais_amount = 0.0
-            if frais_amount > 0:
-                frais_lesson = {
-                    "date": datetime.today().strftime("%d.%m.%Y"),
-                    "time": "00:00",
-                    "student": entry["eleve"],
-                    "teacher": prof,
-                    "duration_min": 0,
-                    "amount": frais_amount,
-                    "attendance_status": "Present",
-                    "source": "notion_hors_tb",
-                    "is_fee": True,
-                    "description_override": "Frais de déplacement",
-                    "notion_taux_prof": 0,
-                    "notion_devise_prof": entry["devise_prof"],
-                    "notion_devise_client": entry["devise_client"],
-                    "notion_taux_client": 0,
-                    "notion_details_heures": details_str,
-                    "notion_mois_label": entry.get("mois_label", ""),
-                }
-                families[safe_id]["lessons"].append(frais_lesson)
-                families[safe_id]["total_courses"] += frais_amount
+        frais_amount, frais_devise = parse_frais_deplacement(
+            details_str, entry["devise_prof"]
+        )
+        if frais_amount > 0:
+            frais_lesson = {
+                "date": datetime.today().strftime("%d.%m.%Y"),
+                "time": "00:00",
+                "student": entry["eleve"],
+                "teacher": prof,
+                "duration_min": 0,
+                "amount": frais_amount,
+                "attendance_status": "Present",
+                "source": "notion_hors_tb",
+                "is_fee": True,
+                "description_override": "Frais de déplacement",
+                "notion_taux_prof": 0,
+                # La devise écrite fait foi pour ce qu'on verse au prof : si tu
+                # notes "15 CHF", le prof touche 15 CHF même si sa ligne Notion
+                # est en EUR. La conversion vers l'EUR est faite par
+                # recap_profs, seul endroit qui dispose du taux de change.
+                "notion_devise_prof": frais_devise or entry["devise_prof"],
+                "notion_devise_client": entry["devise_client"],
+                "notion_taux_client": 0,
+                "notion_details_heures": details_str,
+                "notion_mois_label": entry.get("mois_label", ""),
+            }
+            families[safe_id]["lessons"].append(frais_lesson)
+            families[safe_id]["total_courses"] += frais_amount
 
     return families
