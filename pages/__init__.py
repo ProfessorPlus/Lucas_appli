@@ -4645,6 +4645,27 @@ def page_profs(ctx):
     teachers = recap["teachers"]
     grand_total = recap["grand_total"]
 
+    # Équivalent dirhams, affiché uniquement ici dans l'app (jamais sur les
+    # attestations envoyées aux profs) : sert à estimer les virements depuis
+    # un compte en AED. L'AED n'est pas coté par la BCE, fetch_fx_rate passe
+    # par le peg USD (1 USD = 3.6725 AED).
+    aed_per_eur = None
+    aed_source = ""
+    try:
+        from scripts.recap_profs import fetch_fx_rate as _fx
+        _eur_per_aed, _src = _fx("AED", "EUR", None, None)
+        if _eur_per_aed and _eur_per_aed > 0:
+            aed_per_eur = 1.0 / _eur_per_aed
+            aed_source = _src or ""
+    except Exception:
+        aed_per_eur = None
+
+    def _aed(montant_eur):
+        """« ≈ 1 008.89 AED », ou chaîne vide si le taux est indisponible."""
+        if not aed_per_eur or not montant_eur:
+            return ""
+        return f"≈ {montant_eur * aed_per_eur:,.2f} AED"
+
     # Déterminer le mois depuis les données
     MONTHS_FR = ctx["MONTHS_FR"]
     all_dates = []
@@ -4703,6 +4724,7 @@ def page_profs(ctx):
         <div class="stat-card">
             <div class="stat-label">💰 Grand total</div>
             <div class="stat-value">{grand_total:,.2f} €</div>
+            <div style="font-size:0.8rem;color:#9A3412;margin-top:2px;">{_aed(grand_total)}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -4779,8 +4801,12 @@ def page_profs(ctx):
         teacher_email = _get_teacher_email(tname)
         email_badge = f" — 📧 {teacher_email}" if teacher_email else " — ❌ Pas d'email"
         cur_badge = " — 🇨🇭 attestation CHF" if pay_cur == "CHF" else ""
+        # Équivalent dirhams calculé sur la contre-valeur EUR, donc juste aussi
+        # bien pour un prof payé en CHF.
+        _aed_txt = _aed(total)
+        aed_badge = f" — {_aed_txt}" if _aed_txt else ""
 
-        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{cur_badge}{email_badge}", expanded=False):
+        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{aed_badge}{cur_badge}{email_badge}", expanded=False):
             c1, c2, c3 = st.columns(3)
             if pay_cur == "CHF":
                 with c1:
@@ -4788,10 +4814,11 @@ def page_profs(ctx):
                 with c2:
                     st.metric("Équivalent EUR", f"{total:.2f} €")
                 with c3:
-                    st.metric("Heures", f"{tdata['total_hours']:.2f} h")
+                    st.metric("Équivalent AED", _aed(total).replace("≈ ", "") or "—")
                 st.caption(
                     "🇨🇭 Ce prof est payé en francs : son attestation PDF est libellée "
-                    "en CHF. L'équivalent en euros n'est là que pour ton suivi."
+                    "en CHF. Les équivalents EUR et AED ne servent qu'à ton suivi et "
+                    "n'apparaissent pas sur le document qu'il reçoit."
                 )
             else:
                 with c1:
@@ -4800,6 +4827,9 @@ def page_profs(ctx):
                     st.metric("Familles CHF→EUR", f"{tdata['chf_as_eur']:.2f} €")
                 with c3:
                     st.metric("TOTAL", f"{total:.2f} €")
+                _aed_eur = _aed(total)
+                if _aed_eur:
+                    st.caption(f"💱 Équivalent dirhams : **{_aed_eur}** — pour ton suivi uniquement, n'apparaît pas sur l'attestation du prof.")
 
             # Tableau des leçons
             sorted_details = sorted(tdata["details"], key=lambda x: x["date"])
