@@ -25,6 +25,12 @@ FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
 ECB_SDMX_URL = "https://data-api.ecb.europa.eu/service/data/EXR/M.CHF.EUR.SP00.E"
 FALLBACK_CHF_EUR = 0.94
 
+# L'AED n'est pas coté par la BCE : il est arrimé au dollar à taux fixe
+# (1 USD = 3.6725 AED depuis 1997). On passe donc par EUR→USD→AED, comme
+# le fait déjà recap_profs pour les familles facturées en dirhams.
+AED_USD_PEG = 3.6725
+FALLBACK_EUR_AED = 4.0  # ~1 EUR = 4 AED, repli si l'API est injoignable
+
 
 @lru_cache(maxsize=36)
 def _fetch_chf_eur_rate(target_year=None, target_month=None):
@@ -60,6 +66,56 @@ def _fetch_chf_eur_rate(target_year=None, target_month=None):
     except Exception:
         pass
     return FALLBACK_CHF_EUR, "Taux de secours"
+
+
+@lru_cache(maxsize=36)
+def _fetch_eur_aed_rate(target_year=None, target_month=None):
+    """Combien de dirhams vaut 1 EUR, en moyenne sur le mois visé."""
+    if target_year and target_month:
+        prev_y, prev_m = target_year, target_month
+    else:
+        today = _date.today()
+        prev_y, prev_m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    last_day = _calendar.monthrange(prev_y, prev_m)[1]
+    sd = f"{prev_y:04d}-{prev_m:02d}-01"
+    ed = f"{prev_y:04d}-{prev_m:02d}-{last_day:02d}"
+    ml = f"{prev_y:04d}-{prev_m:02d}"
+    try:
+        r = requests.get(f"{FRANKFURTER_URL}/{sd}..{ed}", params={"base": "EUR", "symbols": "USD"}, timeout=15)
+        r.raise_for_status()
+        rates = r.json().get("rates", {})
+        vals = [d["USD"] for d in rates.values() if "USD" in d]
+        if vals:
+            usd_per_eur = sum(vals) / len(vals)
+            return round(usd_per_eur * AED_USD_PEG, 4), f"Moyenne {ml} ({len(vals)}j)"
+    except Exception:
+        pass
+    return FALLBACK_EUR_AED, "Taux de secours"
+
+
+def _target_month_from(extraction_end_date):
+    """(annee, mois) visés par l'extraction, ou (None, None)."""
+    if not extraction_end_date:
+        return None, None
+    try:
+        if isinstance(extraction_end_date, str):
+            from datetime import datetime as _dt
+            d = _dt.strptime(extraction_end_date.strip()[:10], "%Y-%m-%d").date()
+        elif isinstance(extraction_end_date, _date):
+            d = extraction_end_date
+        else:
+            d = extraction_end_date.date() if hasattr(extraction_end_date, "date") else None
+        if d:
+            return d.year, d.month
+    except Exception:
+        pass
+    return None, None
+
+
+def require_eur_to_aed_factor(extraction_end_date=None):
+    """(dirhams par euro, libellé de la source) pour le mois de l'extraction."""
+    ty, tm = _target_month_from(extraction_end_date)
+    return _fetch_eur_aed_rate(ty, tm)
 
 
 def require_chf_to_eur_factor(extraction_end_date=None):
@@ -156,7 +212,8 @@ def _circle(c, cx, cy, r, fill):
 # PAGE BUILDER
 # ===========================
 
-def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source, teacher_cfg=None):
+def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source, teacher_cfg=None,
+                aed_rate=None, aed_source=None):
     """Draw one complete teacher recap, spanning multiple pages if needed.
 
     teacher_cfg: optional dict from secrets.yaml.teachers[teacher_name]. If it
@@ -340,6 +397,31 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
                 cx += w + gap
             
             y -= card_h
+
+            # ─────────────────────────────
+            # ÉQUIVALENT AED (dirham des Émirats)
+            # Placé juste sous les cartes, donc visible dès le haut de la page :
+            # sert à estimer d'un coup d'œil le montant à virer depuis un compte
+            # en dirhams. Indicatif — le montant qui fait foi reste celui de la
+            # carte TOTAL, dans la devise de paie du prof.
+            # ─────────────────────────────
+            if aed_rate and total_eur:
+                aed_total = total_eur * aed_rate
+                y -= 12
+                band_h = 28
+                _rrect(c, MX, y - band_h, CW, band_h, r=8,
+                       fill=colors.HexColor("#FFF7ED"), stroke=colors.HexColor("#FDBA74"))
+                c.setFillColor(colors.HexColor("#9A3412"))
+                c.setFont(FB, 8)
+                c.drawString(MX + 14, y - 12, "ÉQUIVALENT DIRHAMS (indicatif)")
+                c.setFont(FB, 14)
+                c.drawString(MX + 14, y - band_h + 6, f"≈ {aed_total:,.2f} AED")
+                c.setFillColor(TXT_MID)
+                c.setFont(F, 8)
+                _src = f" · {aed_source}" if aed_source else ""
+                c.drawRightString(PW - MX - 14, y - band_h + 10,
+                                  f"1 EUR = {aed_rate:,.4f} AED{_src}")
+                y -= band_h
 
             # ─────────────────────────────
             # LEGAL INFO LINE (if cfg provides legal_name / siren)
@@ -533,9 +615,12 @@ def _cfg_for(teachers_cfg, teacher_name):
 
 def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None, extraction_end_date=None, teachers_cfg=None):
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
+    aed_rate, aed_source = require_eur_to_aed_factor(extraction_end_date)
     buf = io.BytesIO()
     cv = canvas.Canvas(buf, pagesize=A4)
-    _build_page(cv, teacher_name, data, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, teacher_name))
+    _build_page(cv, teacher_name, data, mois_label, logo_path, rate, source,
+                teacher_cfg=_cfg_for(teachers_cfg, teacher_name),
+                aed_rate=aed_rate, aed_source=aed_source)
     cv.save()
     buf.seek(0)
     return buf.getvalue()
@@ -544,6 +629,7 @@ def generate_single_pdf_to_bytes(teacher_name, data, mois_label, logo_path=None,
 def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None, teachers_cfg=None):
     import zipfile
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
+    aed_rate, aed_source = require_eur_to_aed_factor(extraction_end_date)
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
         for tname in sorted(teacher_recaps.keys()):
@@ -554,7 +640,9 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
                 continue
             buf = io.BytesIO()
             cv = canvas.Canvas(buf, pagesize=A4)
-            _build_page(cv, tname, d, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, tname))
+            _build_page(cv, tname, d, mois_label, logo_path, rate, source,
+                        teacher_cfg=_cfg_for(teachers_cfg, tname),
+                        aed_rate=aed_rate, aed_source=aed_source)
             cv.save()
             buf.seek(0)
             safe = tname.replace(" ", "_")
@@ -565,6 +653,7 @@ def generate_all_pdfs_as_zip(teacher_recaps, mois_label, logo_path=None, exclude
 
 def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclude_owner="Parisi Lucas", extraction_end_date=None, teachers_cfg=None):
     rate, source, _ = require_chf_to_eur_factor(extraction_end_date)
+    aed_rate, aed_source = require_eur_to_aed_factor(extraction_end_date)
     buf = io.BytesIO()
     cv = canvas.Canvas(buf, pagesize=A4)
     first = True
@@ -577,7 +666,9 @@ def generate_all_pdfs_to_bytes(teacher_recaps, mois_label, logo_path=None, exclu
         if not first:
             cv.showPage()
         first = False
-        _build_page(cv, tname, d, mois_label, logo_path, rate, source, teacher_cfg=_cfg_for(teachers_cfg, tname))
+        _build_page(cv, tname, d, mois_label, logo_path, rate, source,
+                    teacher_cfg=_cfg_for(teachers_cfg, tname),
+                    aed_rate=aed_rate, aed_source=aed_source)
     if not first:
         cv.save()
         buf.seek(0)
