@@ -4121,11 +4121,12 @@ def page_config(ctx):
                             width="small"
                         ),
                         "Payé en CHF": st.column_config.CheckboxColumn(
-                            "🇨🇭 Payé en CHF",
+                            "🇨🇭 Payé + attesté en CHF",
                             help=(
-                                "Coché : le prof est payé en francs, à son taux CHF/h. "
-                                "L'équivalent en euros affiché dans la paie est calculé au taux "
-                                "moyen du marché.\n\n"
+                                "Coché : le prof est payé en francs, à son taux CHF/h, et "
+                                "l'attestation de paiement qu'il reçoit par email est libellée "
+                                "en CHF. L'équivalent en euros affiché dans la paie est calculé "
+                                "au taux moyen du marché, pour ton suivi uniquement.\n\n"
                                 "Décoché (défaut) : le prof est payé exactement à son taux EUR/h, "
                                 "sans conversion — le montant ne bouge donc jamais avec le change.\n\n"
                                 "La devise du client n'entre plus en compte."
@@ -4769,30 +4770,56 @@ def page_profs(ctx):
             continue
 
         total = tdata["eur"] + tdata["chf_as_eur"]
+        # Devise dans laquelle le prof est réellement payé : c'est elle qui
+        # libelle son attestation PDF. L'affichage ci-dessous doit donc
+        # correspondre exactement au document qu'il recevra par email.
+        pay_cur = (tdata.get("payout_currency") or "EUR").upper()
+        du = tdata.get("total_payout", total)
+        sym = "CHF" if pay_cur == "CHF" else "€"
         teacher_email = _get_teacher_email(tname)
         email_badge = f" — 📧 {teacher_email}" if teacher_email else " — ❌ Pas d'email"
+        cur_badge = " — 🇨🇭 attestation CHF" if pay_cur == "CHF" else ""
 
-        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{total:.2f} €**{email_badge}", expanded=False):
+        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{cur_badge}{email_badge}", expanded=False):
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Familles EUR", f"{tdata['eur']:.2f} €")
-            with c2:
-                st.metric("Familles CHF→EUR", f"{tdata['chf_as_eur']:.2f} €")
-            with c3:
-                st.metric("TOTAL", f"{total:.2f} €")
+            if pay_cur == "CHF":
+                with c1:
+                    st.metric("À PAYER (attestation)", f"{du:.2f} CHF")
+                with c2:
+                    st.metric("Équivalent EUR", f"{total:.2f} €")
+                with c3:
+                    st.metric("Heures", f"{tdata['total_hours']:.2f} h")
+                st.caption(
+                    "🇨🇭 Ce prof est payé en francs : son attestation PDF est libellée "
+                    "en CHF. L'équivalent en euros n'est là que pour ton suivi."
+                )
+            else:
+                with c1:
+                    st.metric("Familles EUR", f"{tdata['eur']:.2f} €")
+                with c2:
+                    st.metric("Familles CHF→EUR", f"{tdata['chf_as_eur']:.2f} €")
+                with c3:
+                    st.metric("TOTAL", f"{total:.2f} €")
 
             # Tableau des leçons
             sorted_details = sorted(tdata["details"], key=lambda x: x["date"])
             table_rows = []
             for d in sorted_details:
-                table_rows.append({
+                row = {
                     "Date": d["date"],
                     "Élève": d["student"],
                     "Durée": f"{d['duration_min']} min",
                     "Taux": d["rate"],
                     "Devise": d["currency"],
-                    "Montant €": f"{d['amount_eur']:.2f}",
-                })
+                }
+                if pay_cur == "CHF":
+                    # Mêmes montants que sur l'attestation envoyée au prof.
+                    _chf = d.get("amount_chf")
+                    row["Montant CHF"] = f"{_chf:.2f}" if _chf else "—"
+                    row["Équiv. €"] = f"{d['amount_eur']:.2f}"
+                else:
+                    row["Montant €"] = f"{d['amount_eur']:.2f}"
+                table_rows.append(row)
 
             st.dataframe(table_rows, hide_index=True, use_container_width=True)
 
@@ -4841,7 +4868,9 @@ def page_profs(ctx):
     if profs_with_email:
         st.info(f"📧 **{len(profs_with_email)}** professeur(s) avec email — prêts à recevoir leur fiche")
         for p in profs_with_email:
-            st.caption(f"• {p['name']} → {p['email']}")
+            _pc = (p["data"].get("payout_currency") or "EUR").upper()
+            _dev = "🇨🇭 attestation en CHF" if _pc == "CHF" else "attestation en EUR"
+            st.caption(f"• {p['name']} → {p['email']} — {_dev}")
     if profs_without_email:
         st.warning(f"⚠️ **{len(profs_without_email)}** professeur(s) sans email : {', '.join(profs_without_email)}")
 
