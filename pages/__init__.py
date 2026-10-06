@@ -4801,12 +4801,15 @@ def page_profs(ctx):
         teacher_email = _get_teacher_email(tname)
         email_badge = f" — 📧 {teacher_email}" if teacher_email else " — ❌ Pas d'email"
         cur_badge = " — 🇨🇭 attestation CHF" if pay_cur == "CHF" else ""
+        # Rappel de suivi : son virement part en Lituanie. Comme les équivalents
+        # AED/EUR, la mention reste dans l'app et n'entre pas dans son PDF.
+        lt_badge = " — 🇱🇹 Paiement envoyé Lituanie" if "luckas" in tname.lower() else ""
         # Équivalent dirhams calculé sur la contre-valeur EUR, donc juste aussi
         # bien pour un prof payé en CHF.
         _aed_txt = _aed(total)
         aed_badge = f" — {_aed_txt}" if _aed_txt else ""
 
-        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{aed_badge}{cur_badge}{email_badge}", expanded=False):
+        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{aed_badge}{cur_badge}{lt_badge}{email_badge}", expanded=False):
             c1, c2, c3 = st.columns(3)
             if pay_cur == "CHF":
                 with c1:
