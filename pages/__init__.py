@@ -27,7 +27,9 @@ from scripts.recap_profs import compute_teacher_recap
 from scripts.generate_prof_pdfs import generate_all_pdfs_to_bytes, generate_single_pdf_to_bytes, generate_all_pdfs_as_zip
 from scripts.create_payment_links_no_split import run_create_payment_links_no_split
 from scripts.no_prof_sync_stripe_notion import run_sync_stripe_notion_no_split
-from scripts.fetch_notion_profs import fetch_notion_profs, convert_notion_profs_to_families
+from scripts.fetch_notion_profs import (
+    fetch_notion_profs, convert_notion_profs_to_families, strip_frais_deplacement,
+)
 from scripts.fetch_unpaid_notion import fetch_unpaid_n2, deactivate_old_payment_links
 from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json
 from scripts.config_loader import is_streamlit_cloud
@@ -253,6 +255,26 @@ def _get_zero_hour_notion_profs(secrets=None):
     return excluded
 
 
+def _carole_details_heures(data):
+    """Texte 'Détails heures' Notion de Carole Tessier, pour son mail personnalisé.
+
+    Détection par nom (robuste à la fusion Notion↔TutorBird qui écrase source),
+    jamais la ligne d'une autre famille. Les mentions de frais de déplacement
+    sont retirées : elles concernent la paie du prof, pas la cliente.
+    """
+    for fam in (data or {}).values():
+        _pname_lower = (fam.get("parent_name") or "").lower()
+        if not ("carole" in _pname_lower and "tessier" in _pname_lower):
+            continue
+        for L in fam.get("lessons", []):
+            if L.get("source") != "notion_hors_tb":
+                continue
+            dh = strip_frais_deplacement(L.get("notion_details_heures", ""))
+            if dh:
+                return dh
+    return ""
+
+
 def page_accueil(ctx):
     st.markdown("""
     <div class="header-card">
@@ -279,7 +301,7 @@ def page_accueil(ctx):
     if data:
         for fam in data.values():
             parent = fam.get("parent_name") or fam.get("family_name") or ""
-            lessons = [L for L in fam.get("lessons", []) if L.get("attendance_status") != "AbsentNotice"]
+            lessons = [L for L in fam.get("lessons", []) if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
             amount = sum(float(L.get("amount") or 0) for L in lessons)
             currency = (fam.get("currency") or "").upper()
             if not currency:
@@ -1373,7 +1395,7 @@ def page_payment(ctx):
                 additional_amounts = {}
                 for fam_id, fam_data in prev_data.items():
                     lessons = fam_data.get("lessons", [])
-                    billable = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
+                    billable = [L for L in lessons if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
                     fam_total = sum(float(L.get("amount") or 0) for L in billable)
                     if fam_total > 0:
                         additional_amounts[fam_id] = fam_total
@@ -2288,18 +2310,8 @@ def page_send(ctx):
                         st.error(f"❌ Erreur : {e}")
 
     # Récupérer les détails heures Notion pour le mail personnalisé Carole
-    carole_details = ""
-    if data:
-        for fam in data.values():
-            if fam.get("source") == "notion_hors_tb":
-                for L in fam.get("lessons", []):
-                    dh = L.get("notion_details_heures", "")
-                    if dh:
-                        carole_details = dh
-                        break
-                if carole_details:
-                    break
-    
+    carole_details = _carole_details_heures(data)
+
     carole_template = {
         "subject": f"Facture - Soutien scolaire - {month_name} {year}",
         "body": f"""Bonjour,
@@ -2714,19 +2726,8 @@ Professor+
     }
     
     # Récupérer les détails heures Notion pour Carole
-    carole_details_rem = ""
-    data_rem = _try_load_data(ctx)
-    if data_rem:
-        for fam in data_rem.values():
-            if fam.get("source") == "notion_hors_tb":
-                for L in fam.get("lessons", []):
-                    dh = L.get("notion_details_heures", "")
-                    if dh:
-                        carole_details_rem = dh
-                        break
-                if carole_details_rem:
-                    break
-    
+    carole_details_rem = _carole_details_heures(_try_load_data(ctx))
+
     carole_reminder_template = {
         "subject": f"Rappel - Facture en attente - Soutien scolaire - {month_name} {year}",
         "body": f"""Bonjour,
@@ -3520,7 +3521,7 @@ def page_update(ctx):
                 _update_additional_amounts = {}
                 for _fid, _fdata in _prev_unpaid_for_notion.items():
                     _lessons = _fdata.get("lessons", [])
-                    _billable = [L for L in _lessons if L.get("attendance_status") != "AbsentNotice"]
+                    _billable = [L for L in _lessons if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
                     _fam_total = sum(float(L.get("amount") or 0) for L in _billable)
                     _fam_hours = sum((L.get("duration_min") or 0) / 60 for L in _billable)
                     _fam_dates = []
@@ -5171,7 +5172,7 @@ def page_edit_invoice(ctx):
 
                             items_pf = []
                             for L in fam.get("lessons", []):
-                                if L.get("attendance_status") == "AbsentNotice":
+                                if L.get("attendance_status") == "AbsentNotice" or L.get("is_fee"):
                                     continue
                                 items_pf.append({
                                     "date": L.get("date", ""),

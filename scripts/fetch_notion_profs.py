@@ -72,6 +72,19 @@ def parse_frais_deplacement(text, fallback_devise="EUR"):
     return amount, _normalize_devise(m.group(2), fallback_devise)
 
 
+def strip_frais_deplacement(text):
+    """Retire la phrase "Ajouter X de frais de déplacement..." d'un texte libre.
+
+    Les frais de déplacement sont réservés à la paie du prof : ils ne doivent
+    jamais apparaître dans ce qu'on envoie à la famille (mail, facture).
+    """
+    cleaned = re.sub(
+        _FRAIS_DEP_PATTERN.pattern + r"[^.;\n]*[.;]?", "", text or "",
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" ,;-\n")
+
+
 def _parse_french_amount(text):
     """Parse un montant au format français (ex '2 321,28 €') ou anglais.
 
@@ -293,16 +306,17 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
             continue
         
         heures = entry["heures_faites"]
+        # 0h = pas de cours ce mois-ci : ni paie prof, ni frais de déplacement.
         if heures <= 0:
             continue
-        
+
         taux_client = entry["taux_horaire_client"]
         montant_total = round(taux_client * heures, 2)
-        
+
         famille = entry["famille"]
         # ID basé sur la famille uniquement (pour fusionner les entrées multi-profs)
         safe_id = f"notion_{famille}".replace(" ", "_").lower()
-        
+
         lesson = {
             "date": datetime.today().strftime("%d.%m.%Y"),
             "time": "00:00",
@@ -319,7 +333,7 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
             "notion_details_heures": entry.get("details_heures", ""),
             "notion_mois_label": entry.get("mois_label", ""),
         }
-        
+
         if safe_id in families:
             # Famille déjà existante → ajouter la leçon
             families[safe_id]["lessons"].append(lesson)
@@ -352,9 +366,11 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                 families[safe_id]["notion_credit_text"] = _ct
 
         # Frais de déplacement : parsing "Ajouter X euros de frais de déplacement"
-        # dans la colonne Notion "Détails heures". Si match, on ajoute une
-        # leçon-supplément distincte (visible en ligne dédiée sur le PDF,
-        # comprise dans le total facturé et dans le lien Stripe).
+        # dans la colonne Notion "Détails heures". Leçon-supplément destinée
+        # UNIQUEMENT à la paie du prof (récap + fiche de paie PDF). Jamais
+        # facturée à la famille : "amount" reste à 0 (ni facture, ni lien
+        # Stripe, ni total famille) et le montant à verser au prof est porté
+        # par "fee_amount".
         details_str = entry.get("details_heures", "") or ""
         frais_amount, frais_devise = parse_frais_deplacement(
             details_str, entry["devise_prof"]
@@ -366,11 +382,11 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                 "student": entry["eleve"],
                 "teacher": prof,
                 "duration_min": 0,
-                "amount": frais_amount,
+                "amount": 0.0,
+                "fee_amount": frais_amount,
                 "attendance_status": "Present",
                 "source": "notion_hors_tb",
                 "is_fee": True,
-                "description_override": "Frais de déplacement",
                 "notion_taux_prof": 0,
                 # La devise écrite fait foi pour ce qu'on verse au prof : si tu
                 # notes "15 CHF", le prof touche 15 CHF même si sa ligne Notion
@@ -383,6 +399,5 @@ def convert_notion_profs_to_families(entries, selected_profs=None):
                 "notion_mois_label": entry.get("mois_label", ""),
             }
             families[safe_id]["lessons"].append(frais_lesson)
-            families[safe_id]["total_courses"] += frais_amount
 
     return families

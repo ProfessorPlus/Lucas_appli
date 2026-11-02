@@ -217,6 +217,16 @@ def norm(name: str) -> str:
     return " ".join(s.split())
 
 
+# Gérant de Professor+ : ses cours sont facturés aux familles mais rien ne lui
+# est versé (tout va dans le net). TutorBird écrit "Parisi Lucas", Notion
+# "Lucas Parisi" -> comparaison indépendante de l'ordre prénom/nom.
+OWNER_NAME = "Lucas Parisi"
+
+
+def is_owner(name: str) -> bool:
+    return sorted(norm(name).split()) == sorted(norm(OWNER_NAME).split())
+
+
 def _to_date(d):
     """Accepts date/datetime or ISO string ('YYYY-MM' or 'YYYY-MM-DD') and returns a date."""
     if d is None:
@@ -400,6 +410,11 @@ def compute_teacher_recap(
             if t_name and norm(t_name) in excluded_norm:
                 continue
 
+            # Gérant : aucun paiement prof (ni récap, ni fiche de paie, ni
+            # frais de déplacement) -> le cours reste entièrement dans le net.
+            if is_owner(t_name):
+                continue
+
             duration = lesson.get("duration_min") or 0
             hours = duration / 60.0
 
@@ -407,12 +422,14 @@ def compute_teacher_recap(
             # CAS SPÉCIAL : Prof hors TutorBird (depuis Notion)
             # ===========================
             if lesson.get("source") == "notion_hors_tb":
-                # Cas Frais de déplacement : reverse au prof exactement ce que
-                # la cliente paie en plus (pas de mult par heures). Pas de
-                # comptage dans nb_lessons / total_hours pour ne pas polluer
-                # les compteurs.
+                # Cas Frais de déplacement : verse au prof le montant noté dans
+                # "Détails heures" (pas de mult par heures), non facturé à la
+                # famille. Pas de comptage dans nb_lessons / total_hours pour
+                # ne pas polluer les compteurs.
                 if lesson.get("is_fee"):
-                    fee_amount = float(lesson.get("amount", 0) or 0)
+                    # "amount" : données extraites avant que le frais ne soit
+                    # retiré de la facture famille (il y était alors porté).
+                    fee_amount = float(lesson.get("fee_amount", lesson.get("amount", 0)) or 0)
                     fee_devise = lesson.get("notion_devise_prof", "EUR")
                     amount_chf_row = 0.0
                     if fee_devise == "EUR":

@@ -408,7 +408,7 @@ def run_update_notion(secrets, data, base_dir, callback=None, no_split=False, fa
             update(progress, f"➕ {parent_name}")
             
             lessons = fam.get("lessons", [])
-            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
+            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
 
             # Carole Tessier (template OCTOPUS) : seulement les leçons Notion
             # (Profs hors TutorBird) — sinon les profs/heures TutorBird parasitent
@@ -1144,7 +1144,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
             lessons = fam.get("lessons", [])
 
             # Filtrer les absences
-            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
+            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
 
             # Carole Tessier (OCTOPUS) : restreindre aux leçons Notion uniquement,
             # cohérent avec generate_invoices.py / create_payment_links_no_split.py /
@@ -1259,7 +1259,7 @@ def run_update_notion_selective(secrets, data, invoice_folder_path, selected_fam
                             # Trouver les élèves concernés dans la famille
                             fam = data.get(fam_id, {})
                             lessons = fam.get("lessons", [])
-                            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice"]
+                            lessons_filtered = [L for L in lessons if L.get("attendance_status") != "AbsentNotice" and not L.get("is_fee")]
                             
                             # Grouper par élève pour ce prof
                             teacher_norm = normalize_for_match(teacher)

@@ -676,6 +676,9 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                 if attendance in STATUTS_NON_FACTURES:
                     cours_non_factures += 1
                     continue
+                # Frais de déplacement : payés au prof, jamais facturés à la famille
+                if L.get("is_fee"):
+                    continue
                 lessons_filtered.append(L)
 
             # Pour Carole (OCTOPUS) : ne retenir que les leçons Notion (Profs hors TutorBird)
@@ -715,8 +718,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     student = L.get("student", "")
                     teacher = L.get("teacher", "Professeur")
                     duration = L.get("duration_min", "")
-                    # Si la leçon porte une description override (ex: "Frais de
-                    # déplacement" injectée par fetch_notion_profs), on l'utilise
+                    # Si la leçon porte une description override, on l'utilise
                     # telle quelle au lieu du format "Cours avec ... pour ...".
                     desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
                     amt = float(L.get("amount", 0) or 0)
@@ -743,6 +745,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         prev_lessons_filtered = [
                             L for L in prev_lessons
                             if L.get("attendance_status") not in STATUTS_NON_FACTURES
+                            and not L.get("is_fee")
                         ]
                         prev_lessons_sorted = sorted(prev_lessons_filtered, key=lambda x: parse_dt(x.get("date", "")))
                         for L in prev_lessons_sorted:
