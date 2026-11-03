@@ -83,6 +83,22 @@ def parse_dt(date_str):
         return datetime.min
 
 
+def format_duree(minutes):
+    """Durée en heures pour la facture client : 60 -> '1h', 90 -> '1h30', 45 -> '0h45'."""
+    try:
+        total = int(round(float(minutes)))
+    except (TypeError, ValueError):
+        return ""
+    h, m = divmod(total, 60)
+    return f"{h}h{m:02d}" if m else f"{h}h"
+
+
+def lesson_description(teacher, student, duration_min):
+    """Libellé d'une ligne de facture client, durée en heures."""
+    duree = format_duree(duration_min)
+    return f"Cours avec {teacher} pour {student}" + (f" ({duree})" if duree else "")
+
+
 # ---------- TOTAL COMPACT (comme l'original) ----------
 class TotalTight(Flowable):
     def __init__(self, text, fontName=FONT_BOLD, fontSize=16, color=BRAND_BLUE, spacing=-1.0):
@@ -720,7 +736,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                     duration = L.get("duration_min", "")
                     # Si la leçon porte une description override, on l'utilise
                     # telle quelle au lieu du format "Cours avec ... pour ...".
-                    desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
+                    desc = L.get("description_override") or lesson_description(teacher, student, duration)
                     amt = float(L.get("amount", 0) or 0)
                     total_due += amt
                     # Pour Notion hors TB : afficher "Mai 2026" au lieu de la
@@ -753,7 +769,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                             student = L.get("student", "")
                             teacher = L.get("teacher", "Professeur")
                             duration = L.get("duration_min", "")
-                            desc = L.get("description_override") or f"Cours avec {teacher} pour {student} ({duration} min)"
+                            desc = L.get("description_override") or lesson_description(teacher, student, duration)
                             amt = float(L.get("amount", 0) or 0)
                             total_due += amt
                             # Idem main loop : date affichée 'Mai 2026' si Notion hors TB.
@@ -849,7 +865,7 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         d = parse_dt(L.get("date", ""))
                         student = L.get("student", "")
                         duration = L.get("duration_min", "")
-                        desc = f"Cours avec {teacher_display} pour {student} ({duration} min)"
+                        desc = lesson_description(teacher_display, student, duration)
                         amt = float(L.get("amount", 0) or 0)
                         total_due += amt
                         items.append({"date": d, "description": desc, "amount": amt})
@@ -908,14 +924,14 @@ def run_generate_invoices(data, secrets, familles_euros, data_dir, base_dir, log
                         prev_fam = previous_unpaid_data.get(fam_id)
                         if prev_fam:
                             for pL in prev_fam.get("lessons", []):
-                                if pL.get("attendance_status") in STATUTS_NON_FACTURES:
+                                if pL.get("attendance_status") in STATUTS_NON_FACTURES or pL.get("is_fee"):
                                     continue
                                 prev_teacher = pL.get("teacher") or ""
                                 if normalize(prev_teacher) == normalize(teacher_display) or normalize(prev_teacher) == normalize(teacher_yaml):
                                     d = parse_dt(pL.get("date", ""))
                                     student = pL.get("student", "")
                                     duration = pL.get("duration_min", "")
-                                    desc = f"Cours avec {prev_teacher} pour {student} ({duration} min)"
+                                    desc = lesson_description(prev_teacher, student, duration)
                                     amt = float(pL.get("amount", 0) or 0)
                                     total_due += amt
                                     prev_items_for_teacher.append({"date": d, "description": desc, "amount": amt})

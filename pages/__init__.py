@@ -15,7 +15,7 @@ import calendar
 from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
-from scripts.generate_invoices import run_generate_invoices
+from scripts.generate_invoices import run_generate_invoices, lesson_description, format_duree
 from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics, get_default_multimonth_template
 from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
@@ -4842,7 +4842,7 @@ def page_profs(ctx):
                 row = {
                     "Date": d["date"],
                     "Élève": d["student"],
-                    "Durée": f"{d['duration_min']} min",
+                    "Durée": "—" if d.get("is_fee") else format_duree(d["duration_min"]),
                     "Taux": d["rate"],
                     "Devise": d["currency"],
                 }
@@ -5176,9 +5176,9 @@ def page_edit_invoice(ctx):
                                     continue
                                 items_pf.append({
                                     "date": L.get("date", ""),
-                                    "description": (
-                                        f"Cours avec {L.get('teacher','?')} pour "
-                                        f"{L.get('student','?')} ({L.get('duration_min','?')} min)"
+                                    "description": lesson_description(
+                                        L.get("teacher", "?"), L.get("student", "?"),
+                                        L.get("duration_min"),
                                     ),
                                     "amount": float(L.get("amount", 0) or 0),
                                 })

@@ -446,7 +446,8 @@ def _build_page(c, teacher_name, data, mois_label, logo_path, fx_rate, fx_source
             dur = d.get("duration_min", 0)
             if not is_fee_row:
                 tot_min += dur
-            c.drawString(rx + 12, ry, "—" if is_fee_row else f"{dur} min")
+            _dh, _dm = divmod(int(round(dur or 0)), 60)
+            c.drawString(rx + 12, ry, "—" if is_fee_row else (f"{_dh}h{_dm:02d}" if _dm else f"{_dh}h"))
             rx += cols[2]
 
             # Taux horaire
