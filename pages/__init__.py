@@ -16,7 +16,7 @@ from scripts.extract_tutorbird import run_extraction
 from scripts.update_notion import run_update_notion, run_update_notion_selective, run_scan_and_compare, run_add_missing_rows
 from scripts.create_payment_links import run_create_payment_links
 from scripts.generate_invoices import run_generate_invoices, lesson_description, format_duree
-from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics, get_default_multimonth_template
+from scripts.send_invoices_email import run_send_invoices, get_default_email_template, get_families_from_folder, collect_invoice_diagnostics, get_default_multimonth_template, mois_precedent, de_mois
 from scripts.sync_stripe_notion import run_sync_stripe_notion
 from scripts.activate_twint import get_twint_status, activate_twint_for_accounts
 from scripts.cleanup_notion import run_cleanup_duplicates, run_scan_notion_dates, run_delete_old_rows
@@ -31,7 +31,7 @@ from scripts.fetch_notion_profs import (
     fetch_notion_profs, convert_notion_profs_to_families, strip_frais_deplacement,
 )
 from scripts.fetch_unpaid_notion import fetch_unpaid_n2, deactivate_old_payment_links
-from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json
+from scripts.storage_manager import list_invoice_folders, load_invoice_folder, load_json as storage_load_json, save_json as storage_save_json
 from scripts.config_loader import is_streamlit_cloud
 from scripts.quotes_data import get_random_hadith, get_random_life_quote, get_progress_message
 
@@ -2312,13 +2312,15 @@ def page_send(ctx):
     # Récupérer les détails heures Notion pour le mail personnalisé Carole
     carole_details = _carole_details_heures(data)
 
+    # Dossier "Novembre 2026" = factures des cours d'octobre 2026 (mois n-1)
+    cours_month, cours_year = mois_precedent(month_name, year)
     carole_template = {
-        "subject": f"Facture - Soutien scolaire - {month_name} {year}",
+        "subject": f"Facture - Soutien scolaire - {cours_month} {cours_year}",
         "body": f"""Bonjour,
 
 J'espère que vous allez bien.
 
-Veuillez trouver ci-joint la facture pour les cours de soutien scolaire du mois de {month_name} {year}.
+Veuillez trouver ci-joint la facture pour les cours de soutien scolaire du mois {de_mois(cours_month)} {cours_year}.
 
 Détails : {carole_details}
 
@@ -2699,42 +2701,20 @@ def page_reminders(ctx):
         year = datetime.now().year
     
     template_fr = get_default_reminder_template(month_name, year)
-    
-    # Template anglais
-    MONTHS_EN = ["January", "February", "March", "April", "May", "June",
-                 "July", "August", "September", "October", "November", "December"]
-    month_idx = ctx["MONTHS_FR"].index(month_name) if month_name in ctx["MONTHS_FR"] else datetime.now().month - 1
-    month_en = MONTHS_EN[month_idx]
-    
-    template_en = {
-        "subject": f"Reminder - Outstanding invoice(s) - Tutoring - {month_en} {year}",
-        "body": f"""Hello,
+    template_en = get_default_reminder_template(month_name, year, language="en")
 
-I hope you are well.
-
-This is a friendly reminder regarding the outstanding tutoring invoice(s) for {month_en} {year}.
-
-Please find attached the corresponding invoice(s). You can pay directly by clicking the "Pay online" button in the PDF.
-
-Please proceed with payment at your earliest convenience.
-
-Do not hesitate to contact me if you have any questions or if you have already made the payment.
-
-Best regards,
-Professor+
-"""
-    }
-    
     # Récupérer les détails heures Notion pour Carole
     carole_details_rem = _carole_details_heures(_try_load_data(ctx))
 
+    # Dossier "Novembre 2026" = factures des cours d'octobre 2026 (mois n-1)
+    cours_month, cours_year = mois_precedent(month_name, year)
     carole_reminder_template = {
-        "subject": f"Rappel - Facture en attente - Soutien scolaire - {month_name} {year}",
+        "subject": f"Rappel - Facture en attente - Soutien scolaire - {cours_month} {cours_year}",
         "body": f"""Bonjour,
 
 J'espère que vous allez bien.
 
-Je me permets de vous relancer concernant la facture de soutien scolaire du mois de {month_name} {year} qui reste en attente de règlement.
+Je me permets de vous relancer concernant la facture de soutien scolaire du mois {de_mois(cours_month)} {cours_year} qui reste en attente de règlement.
 
 Détails : {carole_details_rem}
 
@@ -4787,6 +4767,32 @@ def page_profs(ctx):
         normed = _norm_prof(teacher_name)
         return teacher_emails_normalized.get(normed, "")
 
+    # ===========================
+    # PROFS PAYÉS (case à cocher)
+    # ===========================
+    # {mois_label: [noms des profs payés]} — un mois neuf repart à zéro.
+    # save_json écrit en local + sur Google Drive (Streamlit Cloud), donc la
+    # coche survit aux reboots et d'une session à l'autre.
+    PROFS_PAYES_FILE = "profs_payes.json"
+    payes_mois = set((storage_load_json(PROFS_PAYES_FILE, folder="data", default={}) or {}).get(mois_label, []))
+
+    def _toggle_prof_paye(teacher_name, widget_key):
+        all_payes = storage_load_json(PROFS_PAYES_FILE, folder="data", default={}) or {}
+        payes = set(all_payes.get(mois_label, []))
+        if st.session_state.get(widget_key):
+            payes.add(teacher_name)
+        else:
+            payes.discard(teacher_name)
+        all_payes[mois_label] = sorted(payes)
+        storage_save_json(PROFS_PAYES_FILE, all_payes, folder="data")
+
+    _actifs = [t for t, d in teachers.items() if d["nb_lessons"] > 0]
+    _nb_payes = sum(
+        1 for t in _actifs
+        if st.session_state.get(f"prof_paye_{mois_label}_{t}", t in payes_mois)
+    )
+    st.caption(f"✅ **{_nb_payes}/{len(_actifs)}** professeur(s) payé(s) pour {mois_label} — coche la case à gauche d'un prof une fois son virement fait.")
+
     for tname in sorted(teachers.keys()):
         tdata = teachers[tname]
         if tdata["nb_lessons"] == 0:
@@ -4810,7 +4816,17 @@ def page_profs(ctx):
         _aed_txt = _aed(total)
         aed_badge = f" — {_aed_txt}" if _aed_txt else ""
 
-        with st.expander(f"🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{aed_badge}{cur_badge}{lt_badge}{email_badge}", expanded=False):
+        _paye_key = f"prof_paye_{mois_label}_{tname}"
+        col_paye, col_prof = st.columns([1, 24], vertical_alignment="center")
+        with col_paye:
+            est_paye = st.checkbox(
+                f"Payé — {tname}", value=tname in payes_mois, key=_paye_key,
+                on_change=_toggle_prof_paye, args=(tname, _paye_key),
+                label_visibility="collapsed", help="Coché = prof payé pour ce mois",
+            )
+        paye_badge = "✅ PAYÉ — " if est_paye else ""
+
+        with col_prof, st.expander(f"{paye_badge}🧑‍🏫 **{tname}** — {tdata['nb_lessons']} leçons — **{du:.2f} {sym}**{aed_badge}{cur_badge}{lt_badge}{email_badge}", expanded=False):
             c1, c2, c3 = st.columns(3)
             if pay_cur == "CHF":
                 with c1:

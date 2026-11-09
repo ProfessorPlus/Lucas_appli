@@ -17,6 +17,8 @@ from difflib import SequenceMatcher
 import time
 import requests
 
+from scripts.send_invoices_email import de_mois, english_month, mois_precedent
+
 MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
              "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
 
@@ -135,24 +137,44 @@ def _list_invoice_family_names(invoice_folder):
     return names
 
 
-def get_default_reminder_template(month_name=None, year=None):
+def get_default_reminder_template(month_name=None, year=None, language="fr"):
+    """Template de rappel par défaut.
+
+    month_name/year = mois du dossier de factures (n) : le rappel parle de la
+    facture des cours du mois n-1.
+    """
     if not month_name:
         now = datetime.now()
         month_name = MONTHS_FR[now.month - 1]
         year = now.year
+    cours_month, cours_year = mois_precedent(month_name, year)
+
+    if language == "en":
+        cours_en, _ = english_month(cours_month, cours_year)
+        return {
+            "subject": f"Reminder - Outstanding invoice - Tutoring - {cours_en} {cours_year}",
+            "body": f"""Hello,
+
+I am following up regarding the tutoring invoice for {cours_en} {cours_year}, which is still awaiting payment.
+
+Please find the invoice attached. Payment can be made directly via the "Pay online" button in the PDF.
+
+Please proceed with payment as soon as possible. If you have already paid, please let me know.
+
+Best regards,
+Professor+
+"""
+        }
+
     return {
-        "subject": f"Rappel - Facture(s) en attente - Soutien scolaire - {month_name} {year}",
+        "subject": f"Rappel - Facture en attente - Soutien scolaire - {cours_month} {cours_year}",
         "body": f"""Bonjour,
 
-J'espère que vous allez bien.
+Je me permets de vous relancer concernant la facture de soutien scolaire {de_mois(cours_month)} {cours_year}, toujours en attente de règlement.
 
-Je me permets de vous relancer concernant la/les facture(s) de soutien scolaire du mois de {month_name} {year} qui reste(nt) en attente de règlement.
+Vous trouverez la facture ci-jointe. Le paiement peut être effectué directement via le bouton « Payer en ligne » dans le PDF.
 
-Vous trouverez ci-joint la/les facture(s) correspondante(s). Vous pouvez régler directement en cliquant sur le bouton "Payer en ligne" dans le PDF.
-
-Merci de procéder au paiement dès que possible.
-
-N'hésitez pas à me contacter si vous avez des questions ou si vous avez déjà effectué le paiement.
+Merci de procéder au règlement dès que possible. Si vous avez déjà effectué le paiement, merci de me le signaler.
 
 Cordialement,
 Professor+

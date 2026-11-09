@@ -41,27 +41,53 @@ def english_month(month_name, year):
     return month_name, year
 
 
+def mois_precedent(month_name, year):
+    """Mois n-1 d'un dossier de factures.
+
+    Le dossier "Novembre 2026" contient les factures des cours d'octobre 2026
+    (janvier -> décembre de l'année précédente). Mois inconnu -> inchangé.
+    """
+    keys = [normalize_ascii(m) for m in MONTHS_FR]
+    key = normalize_ascii(month_name)
+    if key not in keys:
+        return month_name, year
+    idx = keys.index(key)
+    if idx == 0:
+        return MONTHS_FR[-1], int(year) - 1
+    return MONTHS_FR[idx - 1], year
+
+
+def de_mois(month_name):
+    """'Octobre' -> 'd’octobre', 'Novembre' -> 'de novembre' (élision devant voyelle)."""
+    m = (month_name or "").lower()
+    return f"d’{m}" if normalize_ascii(m)[:1] in ("a", "e", "i", "o", "u") else f"de {m}"
+
+
 def get_default_email_template(month_name=None, year=None, language="fr"):
-    """Retourne le template d'email par défaut."""
+    """Retourne le template d'email par défaut.
+
+    month_name/year = mois du dossier de factures (mois d'envoi, n) : le mail
+    parle des cours du mois n-1 et demande le règlement avant le 10 du mois n.
+    """
     if not month_name:
         now = datetime.now()
-        idx = now.month - 1
-        year = now.year
-        month_name = MONTHS_FR[idx] if language != "en" else MONTHS_EN[idx]
+        month_name, year = MONTHS_FR[now.month - 1], now.year
+    cours_month, cours_year = mois_precedent(month_name, year)
 
     if language == "en":
-        month_name, year = english_month(month_name, year)
+        cours_en, _ = english_month(cours_month, cours_year)
+        due_en, _ = english_month(month_name, year)
         return {
-            "subject": f"Invoice(s) - Tutoring - {month_name} {year}",
+            "subject": f"Invoice(s) - Tutoring - {cours_en} {cours_year}",
             "body": f"""Hello,
 
 I hope you are well.
 
-Please find attached your invoice(s) for the tutoring lessons for {month_name} {year}.
+Please find attached your invoice(s) for the tutoring lessons for {cours_en} {cours_year}.
 
-You can pay directly by clicking the "Pay online" button in the PDF invoice.
+Payment can be made directly via the "Pay online" button in the PDF.
 
-Please proceed with payment at your earliest convenience, before 10 {month_name} {year}.
+Please proceed with payment before 10 {due_en} {year}.
 
 Best regards,
 Professor+
@@ -69,16 +95,16 @@ Professor+
         }
 
     return {
-        "subject": f"Facture(s) - Soutien scolaire - {month_name} {year}",
+        "subject": f"Facture(s) - Soutien scolaire - {cours_month} {cours_year}",
         "body": f"""Bonjour,
 
-J'espère que vous allez bien.
+J’espère que vous allez bien.
 
-Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_name} {year}.
+Veuillez trouver ci-joint votre facture de soutien scolaire pour le mois {de_mois(cours_month)} {cours_year}.
 
-Vous pouvez régler directement en cliquant sur le bouton "Payer en ligne" dans la facture PDF.
+Le paiement peut être effectué directement via le bouton « Payer en ligne » dans le PDF.
 
-Merci de procéder au paiement dans les plus brefs délais, avant le 10 {month_name} {year}.
+Merci de procéder au règlement avant le 10 {month_name.lower()} {year}.
 
 Cordialement,
 Professor+
@@ -93,16 +119,18 @@ def get_default_multimonth_template(month_name=None, year=None, unpaid_month_lab
         idx = now.month - 1
         year = now.year
         month_name = MONTHS_FR[idx]
-    
+    # Mois du dossier = mois d'envoi (n) -> le mail parle des cours de n-1.
+    cours_month, cours_year = mois_precedent(month_name, year)
+
     unpaid_label = unpaid_month_label or "mois précédent"
-    
+
     return {
-        "subject": f"Facture(s) - Soutien scolaire - {month_name} {year} (incluant cours non réglés)",
+        "subject": f"Facture(s) - Soutien scolaire - {cours_month} {cours_year} (incluant cours non réglés)",
         "body": f"""Bonjour,
 
 J'espère que vous allez bien.
 
-Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois de {month_name} {year}.
+Veuillez trouver ci-joint votre/vos facture(s) pour les cours de soutien scolaire du mois {de_mois(cours_month)} {cours_year}.
 
 Cette facture inclut également les cours de mois précédent qui n'ont pas encore été réglés.
 
