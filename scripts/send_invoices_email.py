@@ -67,7 +67,9 @@ def get_default_email_template(month_name=None, year=None, language="fr"):
     """Retourne le template d'email par défaut.
 
     month_name/year = mois du dossier de factures (mois d'envoi, n) : le mail
-    parle des cours du mois n-1 et demande le règlement avant le 10 du mois n.
+    parle des cours du mois n-1 et demande le règlement avant le 10 de ce même
+    mois n-1, avec l'année du dossier (choix explicite : dossier "Janvier 2027"
+    -> "avant le 10 décembre 2027").
     """
     if not month_name:
         now = datetime.now()
@@ -76,7 +78,6 @@ def get_default_email_template(month_name=None, year=None, language="fr"):
 
     if language == "en":
         cours_en, _ = english_month(cours_month, cours_year)
-        due_en, _ = english_month(month_name, year)
         return {
             "subject": f"Invoice(s) - Tutoring - {cours_en} {cours_year}",
             "body": f"""Hello,
@@ -87,7 +88,7 @@ Please find attached your invoice(s) for the tutoring lessons for {cours_en} {co
 
 Payment can be made directly via the "Pay online" button in the PDF.
 
-Please proceed with payment before 10 {due_en} {year}.
+Please proceed with payment before 10 {cours_en} {year}.
 
 Best regards,
 Professor+
@@ -104,7 +105,7 @@ Veuillez trouver ci-joint votre facture de soutien scolaire pour le mois {de_moi
 
 Le paiement peut être effectué directement via le bouton « Payer en ligne » dans le PDF.
 
-Merci de procéder au règlement avant le 10 {month_name.lower()} {year}.
+Merci de procéder au règlement avant le 10 {cours_month.lower()} {year}.
 
 Cordialement,
 Professor+
